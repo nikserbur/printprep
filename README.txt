@@ -14,7 +14,13 @@ PRINT PREP 1.0 — подготовка фотографий к печати
 ------------------------------
 Сборка требует Windows 10/11 x64 и Python 3.12 x64 с Python Launcher
 (официальный python.org). Распакуйте проект в обычную доступную папку.
-Дважды щёлкните build_exe.bat. При первой сборке нужен интернет для pip.
+Если py сообщает «No runtime installed that matches 3.12», установлен
+только launcher/менеджер Python. Откройте PowerShell и выполните:
+  py install 3.12
+Если команда install не поддерживается, установите Python 3.12 x64 с
+https://www.python.org/downloads/windows/ и Python Launcher.
+Проверьте: py -3.12 -c "import sys; print(sys.version)"
+Затем дважды щёлкните build_exe.bat. При первой сборке нужен интернет для pip.
 Сценарий установит зависимости, выполнит тесты, соберёт PrintPrep.exe,
 проверит встроенный self-test и создаст dist\PrintPrep-Windows-x64.zip.
 Коллегам передавайте ZIP целиком: exe, инструкция, контрольная сумма,

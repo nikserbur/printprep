@@ -2,15 +2,17 @@
 setlocal
 cd /d "%~dp0"
 echo Print Prep - Windows x64 build
-py -3.12 --version >nul 2>&1
-if errorlevel 1 (
-  echo Install Python 3.12 x64 from python.org with the Python launcher.
-  goto :fail
-)
+rem Check actual interpreter output: launcher messages alone do not prove Python ran.
+set "PRINTPREP_PYTHON_OK="
+for /f "delims=" %%V in ('py -3.12 -c "import sys; print(31264 if sys.version_info[:2] == (3, 12) and sys.maxsize > 2**32 else 0)" 2^>nul') do if "%%V"=="31264" set "PRINTPREP_PYTHON_OK=1"
+if not defined PRINTPREP_PYTHON_OK goto :missing_python
 if not exist .venv-build\Scripts\python.exe (
   py -3.12 -m venv .venv-build
   if errorlevel 1 goto :fail
 )
+if not exist .venv-build\Scripts\python.exe goto :missing_venv
+.venv-build\Scripts\python.exe -c "import sys; assert sys.version_info[:2] == (3, 12) and sys.maxsize > 2**32"
+if errorlevel 1 goto :missing_venv
 .venv-build\Scripts\python.exe -m pip install -r requirements-dev.txt
 if errorlevel 1 goto :fail
 set QT_QPA_PLATFORM=offscreen
@@ -29,6 +31,22 @@ echo.
 echo SUCCESS: dist\PrintPrep-Windows-x64.zip
 if not defined CI pause
 exit /b 0
+:missing_python
+echo.
+echo Python 3.12 x64 is required on the BUILD computer.
+echo Git and the Python launcher do not include the Python runtime.
+echo.
+echo Open PowerShell and run:
+echo   py install 3.12
+echo If your launcher does not support install, use the Python 3.12 x64
+echo installer from https://www.python.org/downloads/windows/
+echo Then close this window and run build_exe.bat again.
+echo Colleagues running the finished PrintPrep.exe do NOT need Python.
+goto :fail
+:missing_venv
+echo The build environment is missing or incompatible.
+echo Rename .venv-build to .venv-build-old, then run this script again.
+goto :fail
 :fail
 echo BUILD FAILED. Read the error above. No verified release was produced.
 if not defined CI pause
