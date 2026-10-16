@@ -57,3 +57,8 @@ def upscale2x(im: Image.Image, strength=.6, tile_size=192, cancel=None):
             crop = result[(y - top) * 2:(bottom - top) * 2, (x - left) * 2:(right - left) * 2]
             output.paste(Image.fromarray(crop), (x * 2, y * 2))
     return Image.blend(baseline, output, strength)
+
+
+def release_network():
+    """Release the calling thread's cached DNN before GUI/runtime teardown."""
+    _STATE.__dict__.clear()

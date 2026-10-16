@@ -6,54 +6,26 @@ from dataclasses import asdict, replace
 from pathlib import Path
 
 from PIL import Image
-from PySide6.QtCore import QThread, Signal, Qt, QTimer, QRectF, QSettings, QSize, QUrl, QLineF
+from PySide6.QtCore import QThread, Signal, Qt, QTimer, QRectF, QSettings, QSize, QUrl, QLineF, QCoreApplication, QEvent
 from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QDesktopServices, QIcon
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QFileDialog, QComboBox, QDoubleSpinBox, QSpinBox, QCheckBox,
     QFormLayout, QGroupBox, QScrollArea, QListWidget, QListWidgetItem, QSplitter,
-    QProgressBar, QMessageBox, QDialog, QDialogButtonBox, QSlider, QSizePolicy, QInputDialog)
+    QProgressBar, QMessageBox, QDialog, QDialogButtonBox, QSlider, QSizePolicy, QInputDialog, QStackedWidget, QGridLayout, QButtonGroup, QFrame)
 
 from .enhance import PRESETS, DEFAULTS, analyze
 from .engine import (Settings, Edit, Photo, scan, load_rgb, render, assess, layout, crop_box,
                      oriented, effective_edit, proof, export_batch)
 
-STYLE = '''
-QWidget { background: #11151d; color: #e8edf5; font-family: "Segoe UI", "Inter", sans-serif; font-size: 13px; }
-QMainWindow, QDialog { background: #11151d; }
-QLabel#brand { font-size: 24px; font-weight: 700; letter-spacing: -1px; }
-QLabel#muted { color: #9aa8bd; }
-QLabel#title { font-size: 20px; font-weight: 600; }
-QLabel#tag { color: #8bdbbd; background: #19332d; border-radius: 7px; padding: 5px 9px; }
-QPushButton { background: #252e3f; border: 1px solid #354259; border-radius: 7px; padding: 9px 13px; font-weight: 600; }
-QPushButton:hover { background: #34445b; border-color: #6f90b7; }
-QPushButton:disabled { color: #637086; background: #1b2230; border-color: #273245; }
-QPushButton#primary { background: #8bdbbd; color: #102a22; border-color: #8bdbbd; }
-QPushButton#primary:hover { background: #b0ecd4; }
-QPushButton#primary:disabled { background: #324c44; color: #81958e; border-color: #324c44; }
-QGroupBox { border: 1px solid #2c3749; border-radius: 9px; margin-top: 15px; padding: 16px 10px 9px; font-weight: 600; }
-QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; color: #b1bdd0; }
-QComboBox, QSpinBox, QDoubleSpinBox { background: #1c2533; border: 1px solid #38455a; border-radius: 5px; padding: 5px; min-height: 22px; }
-QComboBox QAbstractItemView { background: #253046; selection-background-color: #395947; }
-QListWidget { background: #151c27; border: none; border-radius: 8px; padding: 4px; }
-QListWidget::item { border: 1px solid transparent; border-radius: 7px; padding: 8px; margin: 3px; }
-QListWidget::item:selected { background: #263d3c; border-color: #79c4a9; }
-QListWidget::item:hover { background: #253047; }
-QScrollArea { border: none; }
-QCheckBox { spacing: 8px; font-weight: 400; }
-QCheckBox::indicator { width: 17px; height: 17px; border: 1px solid #526078; border-radius: 4px; background: #202938; }
-QCheckBox::indicator:checked { background: #8bdbbd; border: 3px solid #446c5e; }
-QProgressBar { border: none; background: #252f41; border-radius: 4px; height: 7px; text-align: center; }
-QProgressBar::chunk { background: #8bdbbd; border-radius: 4px; }
-QSlider::groove:horizontal { height: 5px; background: #344056; border-radius: 2px; }
-QSlider::handle:horizontal { background: #8bdbbd; width: 14px; margin: -5px 0; border-radius: 7px; }
-QToolTip { background: #263247; color: #ffffff; border: 1px solid #52657d; padding: 5px; }
-QSplitter::handle { background: #11151d; width: 8px; }
-QScrollBar:vertical { background: #141c27; width: 9px; }
-QScrollBar::handle:vertical { background: #3d4b62; min-height: 30px; border-radius: 4px; }
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
-QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }
-QAbstractScrollArea::corner { background: #11151d; }
-'''
+from .theme import STYLE
+
+BATCH_PRESETS = {
+    "photo_10x15": ("Фото 10 × 15", "Весь кадр · JPEG · sRGB", Settings()),
+    "photo_13x18": ("Фото 13 × 18", "Весь кадр · JPEG · sRGB", Settings(width_mm=130, height_mm=180)),
+    "photo_20x30": ("Фото 20 × 30", "Крупный отпечаток · JPEG · sRGB", Settings(width_mm=200, height_mm=300)),
+    "gentle": ("Мягкое улучшение", "10 × 15 · бережная коррекция света и цвета", Settings(enhancement_preset="balanced", **PRESETS["balanced"][1])),
+}
+
 
 
 def image_to_qimage(im: Image.Image):
@@ -75,6 +47,23 @@ def button(text, callback, primary=False):
     if primary:
         b.setObjectName('primary')
     return b
+
+
+class PresetCard(QPushButton):
+    def __init__(self, title, note):
+        super().__init__()
+        self.setObjectName('presetCard')
+        self.setCheckable(True)
+        self.setMinimumHeight(96)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        box = QVBoxLayout(self)
+        box.setContentsMargins(21, 17, 21, 17)
+        box.setSpacing(7)
+        for text, name in ((title, 'cardTitle'), (note, 'cardNote')):
+            widget = label(text, name)
+            widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            box.addWidget(widget)
+        self.setAccessibleName(title + '. ' + note)
 
 
 class Task(QThread):
@@ -268,8 +257,9 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle('Print Prep — подготовка фотографий к печати')
         self.setWindowIcon(QIcon(str(Path(__file__).resolve().parents[1] / 'assets' / 'printprep.png')))
-        self.resize(1380, 920)
-        self.setMinimumSize(1040, 700)
+        available = self.screen().availableGeometry()
+        self.setMinimumSize(900, 600)
+        self.resize(min(1280, max(900, available.width() - 40)), min(900, max(600, available.height() - 50)))
         self.setAcceptDrops(True)
         self.folder = None
         self.photos = []
@@ -285,6 +275,10 @@ class MainWindow(QMainWindow):
         self.timer.setSingleShot(True)
         self.timer.setInterval(250)
         self.timer.timeout.connect(self.start_preview)
+        self.summary_timer = QTimer(self)
+        self.summary_timer.setSingleShot(True)
+        self.summary_timer.setInterval(120)
+        self.summary_timer.timeout.connect(self.refresh_batch_summary)
         self._build()
         self.apply_settings(Settings())
         try:
@@ -295,80 +289,389 @@ class MainWindow(QMainWindow):
             pass
 
     def _build(self):
+        self.mode = 'welcome'
+        self.busy = False
+        self.operation = None
+        self.settings_dialog = QDialog(self)
+        self.settings_dialog.setWindowTitle('Print Prep · Настройки всей партии')
+        self.settings_dialog.resize(560, min(780, max(480, self.screen().availableGeometry().height() - 60)))
+        self.recursive = QCheckBox('Искать также во вложенных папках')
+        self._build_settings()
+        settings_layout = QVBoxLayout(self.settings_dialog)
+        settings_layout.setContentsMargins(20, 16, 20, 16)
+        settings_layout.addWidget(label('Настроить пресет', 'title'))
+        settings_layout.addWidget(label('Эти параметры применятся ко всей папке. Индивидуальные кадры сохранятся.', 'muted'))
+        settings_layout.addWidget(self.settings_scroll, 1)
+        controls = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok)
+        controls.button(QDialogButtonBox.StandardButton.Ok).setText('Применить к партии')
+        controls.button(QDialogButtonBox.StandardButton.Cancel).setText('Отмена')
+        controls.accepted.connect(self.accept_settings)
+        controls.rejected.connect(self.settings_dialog.reject)
+        settings_layout.addWidget(controls)
         root = QWidget()
+        root.setObjectName('shell')
         self.setCentralWidget(root)
         outer = QVBoxLayout(root)
-        outer.setContentsMargins(24, 20, 24, 18)
-        outer.setSpacing(16)
-        header = QHBoxLayout()
-        header.addWidget(label('◩  Print Prep', 'brand'))
-        header.addWidget(label('ФОТОГРАФИИ → ГОТОВЫЕ ОТПЕЧАТКИ', 'muted'), 1)
-        header.addWidget(label('Локально · Оригиналы в сохранности', 'tag'))
-        header.addWidget(button('Справка', self.help))
-        outer.addLayout(header)
-        folderbar = QHBoxLayout()
-        self.open_btn = button('＋ Выбрать папку', self.choose_folder)
-        folderbar.addWidget(self.open_btn)
-        self.folder_label = label('Или перетащите папку сюда', 'muted')
-        folderbar.addWidget(self.folder_label, 1)
-        self.recursive = QCheckBox('Включая подпапки')
-        self.recursive.setToolTip('Результаты PrintPrep_* исключаются из повторного сканирования.')
-        folderbar.addWidget(self.recursive)
-        self.rescan_btn = button('Обновить', self.rescan)
-        folderbar.addWidget(self.rescan_btn)
-        outer.addLayout(folderbar)
-        splitter = QSplitter()
-        outer.addWidget(splitter, 1)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        header = QFrame()
+        header.setObjectName('header')
+        hl = QHBoxLayout(header)
+        hl.setContentsMargins(30, 19, 30, 19)
+        mark = label('▧')
+        mark.setStyleSheet('color: #39794f; font-size: 30px; font-weight: 700;')
+        hl.addWidget(mark)
+        hl.addWidget(label('Print Prep', 'brand'))
+        hl.addSpacing(20)
+        hl.addWidget(label('Подготовка фотографий к печати', 'muted'), 1)
+        badge = label('Локальная обработка', 'tag')
+        badge.setWordWrap(False)
+        hl.addWidget(badge)
+        hl.addSpacing(12)
+        hl.addWidget(button('Справка', self.help))
+        outer.addWidget(header)
+        middle = QHBoxLayout()
+        middle.setSpacing(0)
+        self.rail = QFrame()
+        self.rail.setObjectName('rail')
+        self.rail.setFixedWidth(195)
+        rl = QVBoxLayout(self.rail)
+        rl.setContentsMargins(25, 36, 20, 24)
+        rl.addWidget(label('ВАША ПАРТИЯ', 'eyebrow'))
+        rl.addSpacing(20)
+        self.step_labels = []
+        for title, note in [('01  Папка', 'Соберите фотографии'), ('02  Пресет', 'Один для всей партии'), ('03  Результат', 'Готовые копии рядом')]:
+            step = label(title)
+            self.step_labels.append(step)
+            rl.addWidget(step)
+            rl.addWidget(label(note, 'muted'))
+            rl.addSpacing(26)
+        rl.addStretch()
+        rl.addWidget(label('Оригиналы остаются\nбез изменений.', 'muted'))
+        middle.addWidget(self.rail)
+        self.pages = QStackedWidget()
+        middle.addWidget(self.pages, 1)
+        outer.addLayout(middle, 1)
+        self.welcome_page = QWidget()
+        welcome_outer = QVBoxLayout(self.welcome_page)
+        welcome_outer.setContentsMargins(0, 0, 0, 0)
+        self.welcome_scroll = QScrollArea()
+        self.welcome_scroll.setWidgetResizable(True)
+        self.welcome_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        welcome_content = QWidget()
+        welcome_content.setObjectName('shell')
+        self.welcome_scroll.setWidget(welcome_content)
+        welcome_outer.addWidget(self.welcome_scroll)
+        wl = QVBoxLayout(welcome_content)
+        wl.setSizeConstraint(QVBoxLayout.SizeConstraint.SetMinimumSize)
+        wl.setContentsMargins(64, 30, 64, 30)
+        wl.addStretch()
+        wl.addWidget(label('ОДНА ПАПКА. ОДИН ПРЕСЕТ.', 'eyebrow'))
+        wl.addSpacing(10)
+        wl.addWidget(label('Подготовьте фотографии\nк печати за один проход.', 'hero'))
+        wl.addSpacing(10)
+        wl.addWidget(label('Откройте папку, выберите готовый пресет и запустите обработку.\nЕсли нужно — сначала просмотрите и подгоните отдельные кадры.', 'muted'))
+        wl.addSpacing(26)
+        drop = QFrame()
+        drop.setObjectName('dropzone')
+        dl = QVBoxLayout(drop)
+        dl.setContentsMargins(35, 25, 35, 25)
+        folder_icon = label('▱')
+        folder_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        folder_icon.setStyleSheet('font-size: 58px; color: #82a579;')
+        dl.addWidget(folder_icon)
+        drop_title = label('Перетащите сюда папку с фотографиями', 'title')
+        drop_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        dl.addWidget(drop_title)
+        types = label('JPEG, TIFF, PNG, WebP и BMP', 'muted')
+        types.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        dl.addWidget(types)
+        dl.addSpacing(12)
+        self.open_btn = button('Выбрать папку', self.choose_folder, True)
+        self.open_btn.setMinimumWidth(210)
+        dl.addWidget(self.open_btn, 0, Qt.AlignmentFlag.AlignHCenter)
+        dl.addWidget(self.recursive, 0, Qt.AlignmentFlag.AlignHCenter)
+        wl.addWidget(drop)
+        self.welcome_feedback = label('', 'muted')
+        wl.addWidget(self.welcome_feedback)
+        wl.addStretch()
+        wl.addWidget(label('Готовые файлы появятся в новой подпапке внутри выбранной папки.', 'muted'))
+        self.pages.addWidget(self.welcome_page)
+        self.batch_page = QWidget()
+        batch_outer = QVBoxLayout(self.batch_page)
+        batch_outer.setContentsMargins(0, 0, 0, 0)
+        self.batch_scroll = QScrollArea()
+        self.batch_scroll.setWidgetResizable(True)
+        self.batch_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.batch_content = QWidget()
+        self.batch_content.setObjectName('shell')
+        self.batch_scroll.setWidget(self.batch_content)
+        batch_outer.addWidget(self.batch_scroll)
+        bl = QVBoxLayout(self.batch_content)
+        bl.setSizeConstraint(QVBoxLayout.SizeConstraint.SetMinimumSize)
+        bl.setContentsMargins(42, 26, 42, 22)
+        bl.setSpacing(16)
+        bl.addWidget(label('ПРЕСЕТ ДЛЯ ВСЕЙ ПАПКИ', 'eyebrow'))
+        bl.addWidget(label('Выберите, как подготовить фотографии', 'title'))
+        folder_card = QFrame()
+        folder_card.setObjectName('card')
+        fc = QHBoxLayout(folder_card)
+        fc.setContentsMargins(21, 16, 21, 16)
+        folder_text = QVBoxLayout()
+        self.batch_count = label('0 фотографий', 'metric')
+        self.folder_label = label('', 'muted')
+        folder_text.addWidget(self.batch_count)
+        folder_text.addWidget(self.folder_label)
+        fc.addLayout(folder_text, 1)
+        self.change_folder_btn = button('Другая папка', self.choose_folder)
+        fc.addWidget(self.change_folder_btn)
+        self.rescan_btn = button('↻', self.rescan)
+        self.rescan_btn.setToolTip('Обновить список файлов в выбранной папке')
+        fc.addWidget(self.rescan_btn)
+        bl.addWidget(folder_card)
+        grid = QGridLayout()
+        grid.setSpacing(12)
+        self.batch_cards = {}
+        self.card_group = QButtonGroup(self)
+        self.card_group.setExclusive(True)
+        for i, (key, (name, note, settings)) in enumerate(BATCH_PRESETS.items()):
+            card = PresetCard(name, note)
+            card.clicked.connect(lambda checked, k=key: self.choose_batch_preset(k))
+            self.card_group.addButton(card)
+            self.batch_cards[key] = card
+            grid.addWidget(card, i // 2, i % 2)
+        bl.addLayout(grid)
+        mine = QHBoxLayout()
+        mine.addWidget(self.recipe_library, 1)
+        self.tune_btn = button('Настроить пресет…', self.open_settings)
+        mine.addWidget(self.tune_btn)
+        bl.addLayout(mine)
+        summary_card = QFrame()
+        summary_card.setObjectName('card')
+        sc = QVBoxLayout(summary_card)
+        sc.setContentsMargins(20, 15, 20, 15)
+        self.batch_summary = label('')
+        self.batch_summary.setStyleSheet('font-weight: 600; color: #3e5945;')
+        sc.addWidget(self.batch_summary)
+        self.batch_warnings = label('', 'muted')
+        sc.addWidget(self.batch_warnings)
+        bl.addWidget(summary_card)
+        bl.addStretch()
+        batch_tools = QHBoxLayout()
+        batch_tools.addWidget(button('Проверить партию', self.preflight))
+        batch_tools.addWidget(button('Загрузить рецепт…', self.load_recipe))
+        batch_tools.addStretch()
+        batch_tools.addWidget(label('Каждый запуск создаёт новую папку с результатами.', 'muted'))
+        bl.addLayout(batch_tools)
+        self.pages.addWidget(self.batch_page)
+        self._build_review()
+        self.pages.addWidget(self.review_page)
+        self.progress_page = QWidget()
+        pl = QVBoxLayout(self.progress_page)
+        pl.setContentsMargins(70, 40, 70, 40)
+        pl.addStretch()
+        pl.addWidget(label('PRINT PREP РАБОТАЕТ', 'eyebrow'))
+        self.progress_title = label('Готовим фотографии к печати', 'hero')
+        pl.addWidget(self.progress_title)
+        pl.addSpacing(16)
+        self.progress_detail = label('Чтение файлов…', 'muted')
+        pl.addWidget(self.progress_detail)
+        self.progress = QProgressBar()
+        self.progress.setTextVisible(False)
+        self.progress.setFixedHeight(10)
+        pl.addWidget(self.progress)
+        pl.addSpacing(15)
+        self.cancel_btn = button('Остановить после текущего файла', self.cancel)
+        pl.addWidget(self.cancel_btn, 0, Qt.AlignmentFlag.AlignLeft)
+        pl.addWidget(label('Окно можно оставить открытым. Готовые файлы сохранятся даже при остановке.', 'muted'))
+        pl.addStretch()
+        self.pages.addWidget(self.progress_page)
+        self.done_page = QWidget()
+        done = QVBoxLayout(self.done_page)
+        done.setContentsMargins(64, 40, 64, 40)
+        done.addStretch()
+        done.addWidget(label('ГОТОВО', 'eyebrow'))
+        self.done_title = label('Фотографии подготовлены', 'hero')
+        done.addWidget(self.done_title)
+        self.done_summary = label('', 'title')
+        done.addWidget(self.done_summary)
+        self.done_path = label('', 'muted')
+        done.addWidget(self.done_path)
+        done.addSpacing(24)
+        self.output_btn = button('Открыть папку с результатами', self.open_output, True)
+        self.output_btn.setEnabled(False)
+        done.addWidget(self.output_btn, 0, Qt.AlignmentFlag.AlignLeft)
+        done.addSpacing(10)
+        done.addWidget(button('Вернуться к партии', self.show_batch), 0, Qt.AlignmentFlag.AlignLeft)
+        done.addWidget(button('Выбрать другую папку', self.choose_folder), 0, Qt.AlignmentFlag.AlignLeft)
+        done.addStretch()
+        done.addWidget(label('Оригиналы сохранены. Подробности обработки — в report.csv и report.json.', 'muted'))
+        self.pages.addWidget(self.done_page)
+        self.action_bar = QFrame()
+        self.action_bar.setObjectName('actionbar')
+        al = QHBoxLayout(self.action_bar)
+        al.setContentsMargins(28, 17, 28, 17)
+        self.status = label('Выберите папку с фотографиями.', 'muted')
+        al.addWidget(self.status, 1)
+        self.review_btn = button('Просмотреть и подогнать', self.toggle_review)
+        al.addWidget(self.review_btn)
+        self.export_btn = button('Подготовить к печати →', self.export, True)
+        self.export_btn.setEnabled(False)
+        al.addWidget(self.export_btn)
+        outer.addWidget(self.action_bar)
+        self.action_bar.setVisible(False)
+        self.preset.currentIndexChanged.connect(self.preset_changed)
+        for widget in (self.width, self.height, self.border, self.dpi, self.quality):
+            widget.valueChanged.connect(self.schedule_preview)
+        for widget in (self.fit, self.background, self.space, self.intent, self.format):
+            widget.currentIndexChanged.connect(self.schedule_preview)
+        for widget in (self.auto_orientation, self.smart, self.enhance, self.sharpen, self.upscale):
+            widget.toggled.connect(self.schedule_preview)
+        self.show_page('welcome')
+        self.selection_changed()
+
+    def _build_review(self):
+        self.review_page = QWidget()
+        out = QVBoxLayout(self.review_page)
+        out.setContentsMargins(30, 22, 30, 18)
+        row = QHBoxLayout()
+        row.addWidget(label('Просмотрите только то, что нужно', 'title'), 1)
+        row.addWidget(button('Настройки партии…', self.open_settings))
+        out.addLayout(row)
+        self.review_splitter = QSplitter()
         left = QWidget()
-        leftbox = QVBoxLayout(left)
-        leftbox.setContentsMargins(0, 0, 0, 0)
-        self.count_label = label('01  ФОТОГРАФИИ', 'muted')
-        leftbox.addWidget(self.count_label)
+        ll = QVBoxLayout(left)
+        ll.setContentsMargins(0, 0, 0, 0)
+        self.count_label = label('Фотографии', 'muted')
+        ll.addWidget(self.count_label)
         self.list = QListWidget()
         self.list.setIconSize(QSize(64, 64))
         self.list.currentRowChanged.connect(self.selection_changed)
         self.list.itemDoubleClicked.connect(lambda _: self.edit_photo())
-        leftbox.addWidget(self.list)
+        ll.addWidget(self.list)
         self.edit_btn = button('Кадр и коррекция…', self.edit_photo)
-        leftbox.addWidget(self.edit_btn)
-        self.reset_btn = button('Сбросить правку снимка', self.reset_photo)
-        leftbox.addWidget(self.reset_btn)
-        leftbox.addWidget(button('Проверить партию', self.preflight))
-        splitter.addWidget(left)
-        center = QWidget()
-        cb = QVBoxLayout(center)
-        cb.setContentsMargins(8, 0, 8, 0)
-        cb.addWidget(label('02  ПРЕДПРОСМОТР', 'muted'))
+        self.reset_btn = button('Сбросить правку', self.reset_photo)
+        ll.addWidget(self.edit_btn)
+        ll.addWidget(self.reset_btn)
+        self.review_splitter.addWidget(left)
+        right = QWidget()
+        rr = QVBoxLayout(right)
+        rr.setContentsMargins(10, 0, 0, 0)
         toggles = QHBoxLayout()
         self.original_check = QCheckBox('Исходник')
         self.proof_check = QCheckBox('ICC-проба')
-        self.proof_check.setToolTip('Приближённая симуляция ICC в sRGB. Не заменяет калиброванный монитор и пробный отпечаток.')
+        self.proof_check.setToolTip('Приближённая ICC-проба в sRGB; не заменяет пробный отпечаток.')
         self.original_check.toggled.connect(self.schedule_preview)
         self.proof_check.toggled.connect(self.schedule_preview)
         toggles.addWidget(self.original_check)
         toggles.addWidget(self.proof_check)
         toggles.addStretch()
-        cb.addLayout(toggles)
+        rr.addLayout(toggles)
         self.preview = Preview()
-        cb.addWidget(self.preview, 1)
-        self.photo_title = label('Ничего не выбрано', 'title')
-        cb.addWidget(self.photo_title)
-        self.info = label('Размер, разрешение и предупреждения появятся здесь.', 'muted')
-        self.info.setMinimumHeight(42)
-        cb.addWidget(self.info)
+        rr.addWidget(self.preview, 1)
+        self.photo_title = label('Выберите фотографию')
+        self.photo_title.setStyleSheet('font-weight: 650; font-size: 17px;')
+        rr.addWidget(self.photo_title)
+        self.info = label('', 'muted')
+        rr.addWidget(self.info)
         self.warning = label('')
-        self.warning.setMinimumHeight(38)
-        self.warning.setStyleSheet('color: #f0c987;')
-        cb.addWidget(self.warning)
-        splitter.addWidget(center)
+        self.warning.setStyleSheet('color: #946c2a; font-size: 12px;')
+        rr.addWidget(self.warning)
+        self.review_splitter.addWidget(right)
+        self.review_splitter.setSizes([230, 690])
+        out.addWidget(self.review_splitter, 1)
+
+    def show_page(self, mode):
+        self.mode = mode
+        page = {'welcome': self.welcome_page, 'batch': self.batch_page, 'review': self.review_page,
+                'progress': self.progress_page, 'done': self.done_page}[mode]
+        self.pages.setCurrentWidget(page)
+        self.action_bar.setVisible(mode in ('batch', 'review'))
+        self.review_btn.setText('← Вернуться к пресетам' if mode == 'review' else 'Просмотреть и подогнать')
+        step = 0 if mode == 'welcome' or (mode == 'progress' and self.operation == 'scan') else 2 if mode == 'done' else 1
+        for i, widget in enumerate(self.step_labels):
+            widget.setStyleSheet(f'font-size: 14px; font-weight: {700 if i == step else 500}; color: {"#245e45" if i == step else "#99a395"};')
+
+    def show_batch(self):
+        self.timer.stop()
+        self.preview_version += 1
+        self.preview_pending = False
+        self.show_page('batch' if self.photos else 'welcome')
+        self.refresh_batch_summary()
+
+    def show_review(self):
+        if not self.photos or self.busy:
+            return
+        self.show_page('review')
+        if self.list.currentRow() < 0:
+            self.list.setCurrentRow(0)
+        else:
+            self.schedule_preview()
+
+    def toggle_review(self):
+        self.show_batch() if self.mode == 'review' else self.show_review()
+
+    def open_settings(self):
+        before = self.settings()
+        if self.settings_dialog.exec() != QDialog.DialogCode.Accepted:
+            self.apply_settings(before)
+        self.refresh_batch_summary()
+
+    def accept_settings(self):
+        try:
+            self.settings().validate()
+        except Exception as e:
+            self.error(str(e))
+            return
+        self.settings_dialog.accept()
+
+    def choose_batch_preset(self, key):
+        self.apply_settings(replace(BATCH_PRESETS[key][2]))
+        self.recipe_library.setCurrentIndex(0)
+        self.status.setText('Пресет применится ко всем фотографиям. Можно сразу запускать.')
+
+    def refresh_batch_summary(self):
+        if not hasattr(self, 'batch_summary'):
+            return
+        s = self.settings()
+        self.card_group.setExclusive(False)
+        for key, card in self.batch_cards.items():
+            card.setChecked(s == BATCH_PRESETS[key][2])
+        self.card_group.setExclusive(True)
+        match = next((value[0] for value in BATCH_PRESETS.values() if s == value[2]), 'Свои настройки')
+        place = 'весь кадр, возможны поля' if s.fit == 'contain' else 'заполнение с обрезкой'
+        color = 'sRGB' if s.output_space == 'sRGB' else f'ICC: {Path(s.icc_path).name or "не выбран"}'
+        self.batch_summary.setText(f'{match}  ·  {s.width_mm:g} × {s.height_mm:g} мм  ·  {s.dpi} PPI\n{place}  ·  {s.format}  ·  {color}')
+        try:
+            s.validate()
+        except Exception as e:
+            self.batch_warnings.setText(str(e))
+            return
+        low = crop = 0
+        for photo in self.photos:
+            info = assess(photo.size, s, self.edits.get(str(photo.path), Edit()))
+            low += info['ppi'] < 240
+            crop += info['crop_percent'] > 15
+        notes = []
+        if low:
+            notes.append(f'Ниже 240 PPI: {low}')
+        if crop:
+            notes.append(f'Проверьте обрезку: {crop}')
+        if self.edits:
+            notes.append(f'Индивидуальных правок: {sum(str(p.path) in self.edits for p in self.photos)}')
+        self.batch_warnings.setText('  ·  '.join(notes) if notes else 'Всё готово к запуску. Оригиналы останутся без изменений.')
+        self.batch_count.setText(f'{len(self.photos)} фото в партии')
+        self.export_btn.setText(f'Подготовить {len(self.photos)} фото →')
+
+    def _build_settings(self):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setMinimumWidth(320)
-        scroll.setMaximumWidth(420)
         panel = QWidget()
+        panel.setObjectName('shell')
         pb = QVBoxLayout(panel)
         pb.setContentsMargins(8, 0, 8, 0)
-        pb.addWidget(label('03  НАСТРОЙКИ ДЛЯ ВСЕХ', 'muted'))
+        pb.addWidget(label('ПАРАМЕТРЫ ПРЕСЕТА', 'eyebrow'))
         self.preset = QComboBox()
         for name, data in [('10 × 15 см', (100, 150)), ('10 × 15,2 см / 4 × 6″', (101.6, 152.4)),
                            ('13 × 18 см', (130, 180)), ('15 × 21 см', (150, 210)),
@@ -512,34 +815,7 @@ class MainWindow(QMainWindow):
             combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setWidget(panel)
-        splitter.addWidget(scroll)
-        splitter.setSizes([245, 650, 350])
-        footer = QHBoxLayout()
-        self.status = label('Выберите фотографии. Настройки применяются ко всей папке.', 'muted')
-        footer.addWidget(self.status, 1)
-        self.output_btn = button('Открыть результат', self.open_output)
-        self.output_btn.setEnabled(False)
-        footer.addWidget(self.output_btn)
-        self.cancel_btn = button('Остановить', self.cancel)
-        self.cancel_btn.setEnabled(False)
-        footer.addWidget(self.cancel_btn)
-        self.export_btn = button('Подготовить к печати →', self.export, True)
-        self.export_btn.setEnabled(False)
-        footer.addWidget(self.export_btn)
-        outer.addLayout(footer)
-        self.progress = QProgressBar()
-        self.progress.setTextVisible(False)
-        self.progress.setValue(0)
-        self.progress.setMaximumHeight(7)
-        outer.addWidget(self.progress)
-        self.preset.currentIndexChanged.connect(self.preset_changed)
-        for widget in (self.width, self.height, self.border, self.dpi, self.quality):
-            widget.valueChanged.connect(self.schedule_preview)
-        for widget in (self.fit, self.background, self.space, self.intent, self.format):
-            widget.currentIndexChanged.connect(self.schedule_preview)
-        for widget in (self.auto_orientation, self.smart, self.enhance, self.sharpen, self.upscale):
-            widget.toggled.connect(self.schedule_preview)
-        self.selection_changed()
+        self.settings_scroll = scroll
 
     def number(self, low, high, value, suffix):
         w = QDoubleSpinBox()
@@ -658,6 +934,11 @@ class MainWindow(QMainWindow):
     def load_folder(self, folder):
         if self.worker and self.worker.isRunning():
             return
+        self.timer.stop()
+        self.preview_version += 1
+        self.preview_pending = False
+        self.operation = 'scan'
+        self.welcome_feedback.clear()
         self.folder = folder.resolve()
         self.folder_label.setText(str(self.folder))
         self.folder_label.setToolTip(str(self.folder))
@@ -674,14 +955,18 @@ class MainWindow(QMainWindow):
 
     def scanned(self, result):
         self.photos, errors = result
-        self.count_label.setText(f'01  ФОТОГРАФИИ · {len(self.photos)}')
+        self.count_label.setText(f'Фотографии · {len(self.photos)}')
         for p in self.photos:
             item = QListWidgetItem(f'{p.path.name}\n{p.size[0]} × {p.size[1]} px')
             item.setToolTip(f'{p.path}\n{p.profile}')
             self.list.addItem(item)
         self.status.setText(f'Найдено: {len(self.photos)}. Не прочитано: {len(errors)}.' + (' Чтение остановлено.' if self.cancel_event.is_set() else ''))
-        if self.photos:
-            self.list.setCurrentRow(0)
+        self.list.setCurrentRow(-1)
+        self.show_batch()
+        if not self.photos:
+            self.status.setText('Поддерживаемых фотографий не найдено. Выберите другую папку.')
+            self.welcome_feedback.setText('В выбранной папке нет поддерживаемых фотографий. Попробуйте другую папку или включите поиск в подпапках.')
+            self.show_page('welcome')
         if errors:
             box = QMessageBox(self)
             box.setWindowTitle('Некоторые файлы не прочитаны')
@@ -716,9 +1001,13 @@ class MainWindow(QMainWindow):
         self.intent.setVisible(icc_visible)
         if hasattr(self, 'icc_intent_label'):
             self.icc_intent_label.setVisible(icc_visible)
-        self.timer.start()
+        self.summary_timer.start()
+        if self.mode == 'review':
+            self.timer.start()
 
     def start_preview(self):
+        if self.mode != 'review':
+            return
         photo = self.selected()
         if not photo:
             return
@@ -800,17 +1089,30 @@ class MainWindow(QMainWindow):
             self.schedule_preview()
 
     def set_busy(self, busy, text=None):
-        for widget in (self.open_btn, self.rescan_btn, self.recursive):
+        self.busy = busy
+        for widget in (self.open_btn, self.change_folder_btn, self.rescan_btn, self.recursive, self.tune_btn):
             widget.setEnabled(not busy)
+        for card in self.batch_cards.values():
+            card.setEnabled(not busy)
+        self.recipe_library.setEnabled(not busy)
         self.export_btn.setEnabled(not busy and bool(self.photos))
+        self.review_btn.setEnabled(not busy and bool(self.photos))
         self.cancel_btn.setEnabled(busy)
         if text:
             self.status.setText(text)
+            self.progress_detail.setText(text)
         if busy:
+            self.timer.stop()
+            self.preview_version += 1
+            self.preview_pending = False
+            self.progress_title.setText('Собираем фотографии' if self.operation == 'scan' else 'Готовим фотографии к печати')
             self.progress.setRange(0, 0)
+            self.show_page('progress')
         else:
             self.progress.setRange(0, 100)
-            self.progress.setValue(0)
+            if self.mode == 'progress':
+                self.show_batch()
+            self.refresh_batch_summary()
 
     def preflight(self):
         if not self.photos:
@@ -852,6 +1154,7 @@ class MainWindow(QMainWindow):
         folder = self.folder
         self.store.setValue('settings', json.dumps(asdict(settings)))
         self.cancel_event.clear()
+        self.operation = 'export'
         self.set_busy(True, 'Подготовка файлов…')
         self.worker = Task(lambda: export_batch(folder, photos, settings, edits, self.cancel_event,
             lambda i, n, row: self.worker.progress.emit(i, n, row)), self)
@@ -865,6 +1168,7 @@ class MainWindow(QMainWindow):
         self.progress.setRange(0, total)
         self.progress.setValue(i)
         self.status.setText(f"{i} / {total} · {Path(row['source']).name}")
+        self.progress_detail.setText(f"{i} из {total}  ·  {Path(row['source']).name}")
 
     def export_done(self, result):
         self.last_output, report = result
@@ -873,20 +1177,17 @@ class MainWindow(QMainWindow):
         ok = sum(r['status'] == 'ok' for r in rows)
         errors = sum(r['status'] == 'error' for r in rows)
         skipped = sum(r['status'] == 'skipped' for r in rows)
-        text = f'Готово: {ok}. Ошибок: {errors}. Пропущено: {skipped}.'
-        if report['cancelled']:
-            text += ' Обработка остановлена; готовые файлы сохранены.'
-        self.status.setText(text)
-        box = QMessageBox(self)
-        box.setWindowTitle('Print Prep · Результат')
-        box.setText(text)
-        box.setInformativeText(f'{self.last_output}\n\nПодробности и предупреждения — в report.csv и report.json.')
-        box.exec()
+        self.done_title.setText('Обработка остановлена' if report['cancelled'] else 'Фотографии подготовлены' if ok else 'Обработка завершена с ошибками')
+        self.done_summary.setText(f'Готово: {ok}   ·   Ошибок: {errors}   ·   Пропущено: {skipped}')
+        self.done_path.setText(str(self.last_output))
+        self.status.setText(self.done_summary.text())
+        self.show_page('done')
 
     def cancel(self):
         self.cancel_event.set()
         self.cancel_btn.setEnabled(False)
         self.status.setText('Остановка после текущего файла…')
+        self.progress_detail.setText('Остановка после текущего файла…')
 
     def open_output(self):
         if self.last_output:
@@ -993,10 +1294,11 @@ class MainWindow(QMainWindow):
     def help(self):
         QMessageBox.information(self, 'Print Prep · Как подготовить фотографии',
             '1. Выберите папку. При необходимости включите подпапки до выбора.\n'
-            '2. Задайте размер отпечатка в мм и PPI файла (обычно 300).\n'
-            '3. «Вписать» сохраняет весь кадр с полями; «Заполнить» обрезает до формата.\n'
-            '4. Двойной щелчок по снимку — кадр, поворот и коррекция.\n'
-            '5. Нажмите «Подготовить к печати». Результат — в новой PrintPrep_* внутри выбранной папки.\n\n'
+            '2. Выберите пресет для всей партии и сразу запустите подготовку.\n'
+            '3. Для другого размера, ICC или улучшений откройте «Настроить пресет».\n'
+            '4. «Вписать» сохраняет весь кадр с полями; «Заполнить» обрезает до формата.\n'
+            '5. В просмотре двойной щелчок по снимку — кадр, поворот и коррекция.\n'
+            '6. Нажмите «Подготовить к печати». Результат — в новой PrintPrep_* внутри выбранной папки.\n\n'
             'Для фотолаборатории оставьте sRGB, если оператор не требует иного. ICC для экранной пробы '
             'не обязательно предназначен для преобразования файла. CMYK — только с подходящим профилем '
             'и по требованию типографии. Не допускайте повторного управления цветом в драйвере.\n\n'
@@ -1026,6 +1328,8 @@ class MainWindow(QMainWindow):
             self.status.setText('Дождитесь завершения текущей операции и закройте окно ещё раз.')
             event.ignore()
             return
+        self.timer.stop()
+        self.summary_timer.stop()
         self.store.setValue('settings', json.dumps(asdict(self.settings())))
         event.accept()
 
@@ -1038,4 +1342,12 @@ def run():
     app.setStyleSheet(STYLE)
     window = MainWindow()
     window.show()
-    return app.exec()
+    try:
+        return app.exec()
+    finally:
+        # Destroy native widgets and the calling thread's cached DNN while
+        # their runtimes are alive, rather than relying on interpreter order.
+        from .upscale import release_network
+        release_network()
+        window.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)

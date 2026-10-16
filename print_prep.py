@@ -16,7 +16,7 @@ def self_test():
         with Image.open(next(output.glob('*.jpg'))) as im:
             assert im.size == (1772, 1181)
             assert im.info.get('icc_profile')
-        from printprep.upscale import upscale2x
+        from printprep.upscale import upscale2x, release_network
         assert upscale2x(Image.new('RGB', (16, 16), '#9a806f')).size == (32, 32)
         from PySide6.QtWidgets import QApplication
         from printprep.ui import MainWindow
@@ -25,6 +25,10 @@ def self_test():
         window.show()
         app.processEvents()
         window.close()
+        from PySide6.QtCore import QCoreApplication, QEvent
+        window.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        release_network()
     print('Print Prep self-test: PASS')
 
 

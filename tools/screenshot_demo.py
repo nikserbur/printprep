@@ -28,15 +28,26 @@ with tempfile.TemporaryDirectory() as temp:
     app.setStyle('Fusion')
     app.setStyleSheet(STYLE)
     window = MainWindow()
+    window.resize(1280, 900)
     window.apply_settings(Settings())
     window.show()
+    app.processEvents()
+    destination = Path(__file__).resolve().parents[1] / 'docs'
+    window.grab().save(str(destination / 'start.png'))
     window.load_folder(folder)
     end = time.monotonic() + 15
+    while time.monotonic() < end:
+        app.processEvents()
+        if not window.busy and window.mode == 'batch':
+            break
+        time.sleep(.01)
+    window.folder_label.setText('Фотографии / Съёмка в горах')
+    window.grab().save(str(destination / 'interface.png'))
+    window.show_review()
     while time.monotonic() < end:
         app.processEvents()
         if window.preview.picture and not window.timer.isActive() and not window.preview_worker.isRunning():
             break
         time.sleep(.01)
-    window.folder_label.setText('Фотографии / Съёмка в горах')
-    window.grab().save(str(Path(__file__).resolve().parents[1] / 'docs' / 'interface.png'))
+    window.grab().save(str(destination / 'review.png'))
     window.close()
