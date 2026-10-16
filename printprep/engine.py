@@ -16,6 +16,7 @@ from typing import Callable
 
 from PIL import Image, ImageCms, ImageEnhance, ImageFilter, ImageOps, ImageStat
 from .enhance import enhance, PRESETS, DEFAULTS
+from . import __version__
 
 SUPPORTED = {'.jpg', '.jpeg', '.png', '.tif', '.tiff', '.webp', '.bmp'}
 SRGB = ImageCms.ImageCmsProfile(ImageCms.createProfile('sRGB'))
@@ -28,6 +29,10 @@ Image.MAX_IMAGE_PIXELS = MAX_PIXELS
 class Settings:
     width_mm: float = 100
     height_mm: float = 150
+    size_mode: str = 'print'  # print, pixels, long_edge, original
+    pixel_width: int = 3840
+    pixel_height: int = 2160
+    long_edge: int = 3840
     dpi: int = 300  # File PPI, not printer dot resolution.
     fit: str = 'contain'
     auto_orientation: bool = True
@@ -57,6 +62,13 @@ class Settings:
     neural_strength: float = .6
 
     def validate(self):
+        if self.size_mode not in ('print', 'pixels', 'long_edge', 'original'):
+            raise ValueError('Неизвестный режим размера.')
+        for value in (self.pixel_width, self.pixel_height, self.long_edge):
+            if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 32768:
+                raise ValueError('Размер в пикселях должен быть целым числом от 1 до 32768.')
+        if self.size_mode != 'print' and self.border_mm:
+            raise ValueError('Поля в миллиметрах доступны только в режиме печатного размера.')
         if not all(math.isfinite(v) for v in (self.width_mm, self.height_mm, self.border_mm)):
             raise ValueError('Размеры должны быть конечными числами.')
         if not (10 <= self.width_mm <= 1500 and 10 <= self.height_mm <= 1500):
@@ -89,18 +101,24 @@ class Settings:
         if self.enhancement_preset not in PRESETS and self.enhancement_preset != 'custom':
             raise ValueError('Неизвестный пресет обработки.')
         Image.new('RGB', (1, 1), self.background)
-        w, h = self.pixels
-        if w * h > MAX_PIXELS:
-            raise ValueError('Результат превышает лимит 80 мегапикселей. Уменьшите размер или PPI.')
+        if self.size_mode in ('print', 'pixels'):
+            w, h = self.pixels
+            if w * h > MAX_PIXELS:
+                raise ValueError('Результат превышает лимит 80 мегапикселей. Уменьшите размер или PPI.')
 
     @property
     def pixels(self):
+        if self.size_mode == 'pixels':
+            return self.pixel_width, self.pixel_height
+        if self.size_mode != 'print':
+            raise ValueError('Размер зависит от исходника; используйте layout().')
         return tuple(max(1, round(v / 25.4 * self.dpi)) for v in (self.width_mm, self.height_mm))
 
 
 @dataclass
 class Edit:
     rotation: int = 0
+    fit: str | None = None
     center_x: float = .5
     center_y: float = .5
     zoom: float = 1
@@ -108,8 +126,16 @@ class Edit:
     exposure: float = 0
     contrast: float = 1
     saturation: float = 1
+    use_neural: bool | None = None
+    neural_strength: float | None = None
 
     def validate(self):
+        if self.fit not in (None, 'cover', 'contain'):
+            raise ValueError('Некорректный индивидуальный режим кадрирования.')
+        if self.use_neural is not None and type(self.use_neural) is not bool:
+            raise ValueError('Некорректный переключатель нейроувеличения.')
+        if self.neural_strength is not None and (not math.isfinite(self.neural_strength) or not 0 <= self.neural_strength <= 1):
+            raise ValueError('Сила нейроувеличения должна быть от 0 до 1.')
         vals = (self.center_x, self.center_y, self.zoom, self.exposure, self.contrast, self.saturation)
         if not all(math.isfinite(v) for v in vals):
             raise ValueError('Некорректные индивидуальные настройки.')
@@ -193,10 +219,16 @@ def oriented(im: Image.Image, edit: Edit):
 
 
 def layout(size: tuple[int, int], settings: Settings):
+    if settings.size_mode == 'original':
+        return size, size, 0
+    if settings.size_mode == 'long_edge':
+        factor = settings.long_edge / max(size)
+        result = tuple(max(1, round(v * factor)) for v in size)
+        return result, result, 0
     w, h = settings.pixels
     if settings.auto_orientation and (size[0] > size[1]) != (w > h) and size[0] != size[1]:
         w, h = h, w
-    border = round(settings.border_mm / 25.4 * settings.dpi)
+    border = round(settings.border_mm / 25.4 * settings.dpi) if settings.size_mode == 'print' else 0
     return (w, h), (w - 2 * border, h - 2 * border), border
 
 
@@ -239,6 +271,9 @@ def effective_edit(im: Image.Image, settings: Settings, edit: Edit):
 
 
 def assess(size, settings: Settings, edit: Edit):
+    if edit.fit is not None:
+        from dataclasses import replace
+        settings = replace(settings, fit=edit.fit)
     if edit.rotation % 180:
         size = size[::-1]
     canvas, inner, _ = layout(size, settings)
@@ -251,6 +286,13 @@ def assess(size, settings: Settings, edit: Edit):
         used = size
         fraction = 1
         scale = min(inner[0] / size[0], inner[1] / size[1])
+    if settings.size_mode == 'original':
+        if settings.fit == 'cover':
+            integer_box = tuple(round(v) for v in box)
+            canvas = (integer_box[2] - integer_box[0], integer_box[3] - integer_box[1])
+        else:
+            canvas = size
+        scale = 1
     ppi = settings.dpi / scale
     notes = []
     if ppi < 150:
@@ -262,7 +304,7 @@ def assess(size, settings: Settings, edit: Edit):
     if fraction < .85:
         notes.append(f'Будет обрезано {100 * (1 - fraction):.0f}% площади; проверьте кадр.')
     return {'pixels': canvas, 'ppi': round(ppi), 'crop_percent': round(100 * (1 - fraction)),
-            'upscale': scale > 1.0001, 'warnings': notes}
+            'upscale': scale > 1.0001, 'downscale': scale < .9999, 'scale': scale, 'warnings': notes}
 
 
 def adjust(im: Image.Image, settings: Settings, edit: Edit, notes=None):
@@ -285,40 +327,55 @@ def adjust(im: Image.Image, settings: Settings, edit: Edit, notes=None):
     return im
 
 
+def without_enhancements(settings: Settings):
+    """Same geometry, no automatic color/sharpening or learned enlargement."""
+    from dataclasses import replace
+    return replace(settings, **DEFAULTS, enhancement_preset='none', auto_enhance=False,
+                   sharpen=False, upscaler='lanczos')
+
+
 def render(im: Image.Image, settings: Settings, edit: Edit, preview_max: int | None = None, notes=None):
+    from dataclasses import replace
+    if edit.fit is not None:
+        settings = replace(settings, fit=edit.fit)
     im = oriented(im, edit)
     edit = effective_edit(im, settings, edit)
     canvas_size, inner, border = layout(im.size, settings)
-    if preview_max:
-        scale = min(1, preview_max / max(canvas_size))
-        canvas_size = tuple(max(1, round(v * scale)) for v in canvas_size)
-        border = round(border * scale)
-        inner = canvas_size[0] - 2 * border, canvas_size[1] - 2 * border
+    # Crop once, on the source pixel grid, before either preview scaling or export.
     if settings.fit == 'cover':
         im = im.crop(crop_box(im.size, inner[0] / inner[1], edit))
-    requested_scale = max(inner[0] / im.width, inner[1] / im.height) if settings.fit == 'cover' else min(inner[0] / im.width, inner[1] / im.height)
-    if settings.upscaler == 'fsrcnn' and requested_scale > 1.05:
-        if preview_max:
+    if settings.size_mode == 'original':
+        canvas_size = inner = im.size
+    if canvas_size[0] * canvas_size[1] > MAX_PIXELS:
+        raise ValueError('Результат превышает 80 мегапикселей. Уменьшите размер.')
+    requested_scale = (max if settings.fit == 'cover' else min)(inner[0] / im.width, inner[1] / im.height)
+    neural = edit.use_neural if edit.use_neural is not None else settings.upscaler == 'fsrcnn'
+    strength = edit.neural_strength if edit.neural_strength is not None else settings.neural_strength
+    if neural:
+        if requested_scale <= 1.05:
             if notes is not None:
-                notes.append('Нейро ×2 оценивайте на экспортированном файле: предпросмотр использует Lanczos.')
+                notes.append('Нейро ×2 не применяется: результат не требует увеличения. Для увеличения выберите больше пикселей.')
         elif im.width * im.height > 8_000_000:
             if notes is not None:
                 notes.append('Нейро ×2 пропущено: кадр больше 8 Мп; использован Lanczos.')
         else:
             from .upscale import upscale2x
-            im = upscale2x(im, settings.neural_strength)
+            im = upscale2x(im, strength)
             if notes is not None:
-                notes.append('Применён FSRCNN ×2; дорисованные детали требуют проверки.' +
-                             (' Остаточное увеличение >×2 — Lanczos.' if requested_scale > 2 else ''))
+                notes.append('Применён FSRCNN ×2.' + (' Остаточное увеличение >×2 — Lanczos.' if requested_scale > 2 else ''))
     if settings.fit == 'cover':
-        im = im.resize(inner, Image.Resampling.LANCZOS)
+        im = im.resize(inner, Image.Resampling.LANCZOS) if im.size != inner else im
     else:
-        im = ImageOps.contain(im, inner, Image.Resampling.LANCZOS)
+        im = ImageOps.contain(im, inner, Image.Resampling.LANCZOS) if im.size != inner else im
     im = adjust(im, settings, edit, notes)
     if settings.sharpen:
         im = im.filter(ImageFilter.UnsharpMask(radius=.7, percent=70, threshold=3))
     canvas = Image.new('RGB', canvas_size, settings.background)
     canvas.paste(im, ((canvas.width - im.width) // 2, (canvas.height - im.height) // 2))
+    if preview_max:
+        # Exact processing first, then display scaling. Neural and numerical effects
+        # are no longer silently dropped just because this is a preview.
+        canvas.thumbnail((preview_max, preview_max), Image.Resampling.LANCZOS)
     return canvas
 
 
@@ -406,7 +463,7 @@ def export_batch(folder: Path, photos: list[Photo], settings: Settings, edits: d
         rows.append(row)
         if progress:
             progress(index + 1, len(photos), row)
-    report = {'app': 'Print Prep', 'version': '1.0.0', 'settings': asdict(settings),
+    report = {'app': 'Print Prep', 'version': __version__, 'settings': asdict(settings),
               'edits': {k: asdict(v) for k, v in edits.items()}, 'results': rows,
               'total': len(photos), 'cancelled': len(rows) < len(photos)}
     (output / 'report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')

@@ -61,3 +61,29 @@ _CHEVRON = (Path(__file__).resolve().parents[1] / 'assets' / 'chevron.png').as_p
 STYLE += "QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: top right; width: 28px; border: none; }"
 STYLE += f'QComboBox::down-arrow {{ image: url("{_CHEVRON}"); width: 12px; height: 8px; }}'
 STYLE += "QSpinBox::up-button, QDoubleSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::down-button { width: 18px; border: none; background: transparent; }"
+
+STYLE += """
+QTabWidget::pane { border: 1px solid #dde5d8; border-radius: 10px; background: #f5f6f2; }
+QTabBar::tab { padding: 11px 15px; color: #667963; border: none; background: transparent; }
+QTabBar::tab:selected { color: #234d34; background: #e5efdf; border-bottom: 2px solid #528466; }
+QTabBar::tab:hover { background: #edf3e7; }
+QComboBox { padding: 8px 30px 8px 12px; min-height: 24px; }
+QComboBox QAbstractItemView { border: 1px solid #d9e3d1; border-radius: 8px; outline: none; background: #ffffff; }
+QComboBox QAbstractItemView::item { min-height: 30px; padding: 6px 12px; border: none; }
+QComboBox QAbstractItemView::item:selected { background: #e7f0e0; color: #244831; }
+QComboBox QAbstractItemView::item:hover { background: #f0f5eb; }
+QScrollBar:horizontal { background: #edf1e8; height: 9px; border: none; }
+QScrollBar::handle:horizontal { background: #b7c7ab; min-width: 36px; border-radius: 4px; }
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0px; }
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: none; }
+QSlider::sub-page:horizontal { background: #7da275; border-radius: 2px; }
+"""
+
+STYLE += """
+QComboBox#activePreset { background: #edf5e6; border: 1px solid #90ad82; color: #244a30; font-size: 14px; font-weight: 600; }
+QMenu { background: #ffffff; color: #274131; border: 1px solid #d9e3d1; padding: 7px; }
+QMenu::item { padding: 9px 17px; border-radius: 5px; }
+QMenu::item:selected { background: #e7f0e0; }
+QMenu::item:disabled { color: #a4aea0; }
+QMenu::separator { height: 1px; background: #e5ebdf; margin: 5px 9px; }
+"""

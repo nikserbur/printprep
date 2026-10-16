@@ -8,8 +8,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from PIL import Image, ImageDraw
 from PySide6.QtWidgets import QApplication
-from printprep.ui import MainWindow, STYLE
-from printprep.engine import Settings, SRGB_BYTES
+from printprep.ui import MainWindow, CropDialog, STYLE
+from printprep.engine import Settings, Edit, SRGB_BYTES
 
 with tempfile.TemporaryDirectory() as temp:
     folder = Path(temp)
@@ -29,7 +29,7 @@ with tempfile.TemporaryDirectory() as temp:
     app.setStyleSheet(STYLE)
     window = MainWindow()
     window.resize(1280, 900)
-    window.apply_settings(Settings())
+    window.apply_settings(Settings(size_mode='original'))
     window.show()
     app.processEvents()
     destination = Path(__file__).resolve().parents[1] / 'docs'
@@ -50,4 +50,28 @@ with tempfile.TemporaryDirectory() as temp:
             break
         time.sleep(.01)
     window.grab().save(str(destination / 'review.png'))
+    window.settings_dialog.resize(1140, 800)
+    window.settings_dialog.show()
+    window.schedule_preview()
+    end = time.monotonic() + 15
+    while time.monotonic() < end:
+        app.processEvents()
+        if not window.timer.isActive() and not window.preview_worker.isRunning():
+            break
+        time.sleep(.01)
+    window.settings_dialog.grab().save(str(destination / 'settings.png'))
+    window.settings_dialog.hide()
+    im = window._source_cache[1]
+    editor = CropDialog(im, window.settings(), Edit(), window)
+    editor.resize(1220, 820)
+    editor.show()
+    editor.sliders['exposure'].setValue(20)
+    end = time.monotonic() + 20
+    while time.monotonic() < end:
+        app.processEvents()
+        if editor.last_result is not None and not editor.live_timer.isActive() and not editor.live_worker.isRunning() and not editor.live_pending:
+            break
+        time.sleep(.01)
+    editor.grab().save(str(destination / 'editor.png'))
+    editor.reject()
     window.close()

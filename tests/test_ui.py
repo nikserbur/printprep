@@ -44,6 +44,8 @@ def test_folder_preview_rotation_and_ui(tmp_path):
     dialog = CropDialog(im, Settings(), Edit(), window)
     dialog.show()
     app.processEvents()
+    dialog.view_mode.setCurrentIndex(1)
+    app.processEvents()
     assert dialog.canvas.rect.width() > 0
     dialog.rotate(90)
     assert dialog.canvas.im.size == (600, 900)
@@ -148,7 +150,9 @@ def test_batch_preset_exports_whole_folder_without_preview(tmp_path, monkeypatch
     assert window.mode == 'batch'
     assert preview_loads == []
     assert window.list.currentRow() == -1
-    window.batch_cards['photo_13x18'].click()
+    index = window.recipe_library.findData('builtin:photo_13x18')
+    window.recipe_library.setCurrentIndex(index)
+    window.recipe_library.activated.emit(index)
     settle(app, window)
     assert window.settings().width_mm == 130 and window.settings().height_mm == 180
     assert '13 × 18' in window.batch_summary.text()
@@ -204,8 +208,8 @@ def test_small_window_scrolls_presets_without_overlapping(tmp_path):
     Image.new('RGB', (800, 1200)).save(tmp_path / 'test.jpg')
     window.load_folder(tmp_path)
     settle(app, window)
-    first = window.batch_cards['photo_10x15'].geometry()
-    second_row = window.batch_cards['photo_20x30'].geometry()
+    first = window.batch_cards['original'].geometry()
+    second_row = window.batch_cards['4k'].geometry()
     assert first.bottom() < second_row.top()
     assert window.batch_scroll.verticalScrollBar().maximum() > 0
     assert window.export_btn.isVisible() and window.action_bar.isVisible()

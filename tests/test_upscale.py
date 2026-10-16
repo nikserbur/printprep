@@ -42,7 +42,7 @@ def test_neural_only_for_actual_upscale_and_report(tmp_path):
     assert any('FSRCNN' in n for n in notes)
     notes = []
     render(im, Settings(width_mm=25.4, height_mm=25.4, dpi=72, upscaler='fsrcnn'), Edit(), notes=notes)
-    assert not notes  # No unnecessary neural processing when reducing.
+    assert any('не применяется' in note for note in notes)  # Explain why the network is inactive.
     im.save(tmp_path / 'test.png', icc_profile=SRGB_BYTES)
     photos, _ = scan(tmp_path)
     _, report = export_batch(tmp_path, photos, settings, {})
