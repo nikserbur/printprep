@@ -1,0 +1,18 @@
+# Sources of retained license texts
+
+Downloaded with TLS verification on 2026-10-16:
+
+- LGPL-3.0-only.txt, GPL-3.0-only.txt, GPL-2.0-only.txt, Qt-GPL-exception-1.0.txt:
+  https://github.com/pyside/pyside-setup/tree/6.12/LICENSES
+- LittleCMS-LICENSE.txt:
+  https://github.com/mm2/Little-CMS/blob/master/LICENSE
+
+These files are unmodified. The release packager additionally copies license
+texts present in the installed Pillow, NumPy, Qt/Shiboken and PyInstaller wheels.
+Qt wheels used here omit license files, so their primary license texts are
+retained explicitly. This directory is not a claim of a complete legal audit
+of all Qt build configurations or external printer profiles.
+
+- FSRCNN-Apache-2.0.txt:
+  https://github.com/Saafke/FSRCNN_Tensorflow/blob/master/LICENSE
+  Pretrained weights and attribution: assets/models/README.md.

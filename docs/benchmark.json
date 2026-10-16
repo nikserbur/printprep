@@ -1,0 +1,43 @@
+{
+  "python": "3.12.14",
+  "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+  "input": [
+    6000,
+    4000
+  ],
+  "output": [
+    1772,
+    1181
+  ],
+  "repeats": 3,
+  "scope": "local JPEG decode + ICC + downsample + correction + JPEG encode + reports; warm OS cache; synthetic fixture; no Photoshop comparison",
+  "results": [
+    {
+      "preset": "none",
+      "seconds": [
+        1.683,
+        1.463,
+        1.489
+      ],
+      "median_seconds": 1.489
+    },
+    {
+      "preset": "balanced",
+      "seconds": [
+        2.416,
+        2.322,
+        2.365
+      ],
+      "median_seconds": 2.365
+    },
+    {
+      "preset": "lowlight",
+      "seconds": [
+        2.504,
+        2.437,
+        2.465
+      ],
+      "median_seconds": 2.465
+    }
+  ]
+}

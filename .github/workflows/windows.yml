@@ -1,0 +1,28 @@
+name: Windows build
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Test, build and smoke-test Windows executable
+        shell: cmd
+        run: build_exe.bat
+        env:
+          CI: 'true'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PrintPrep-Windows-x64
+          path: dist/PrintPrep-Windows-x64.zip
+          if-no-files-found: error
