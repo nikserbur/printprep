@@ -1,216 +1,187 @@
-import os
-os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+"""End-to-end UI checks, including every complaint from the first user review."""
 import time
-from PIL import Image
-from PySide6.QtWidgets import QApplication
-from printprep.engine import Edit, Settings, SRGB_BYTES
-from printprep.ui import MainWindow, CropDialog, STYLE
+from pathlib import Path
+
+import numpy as np
+import pytest
+from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox
+
+from printprep.ui.main_window import MainWindow
+from printprep.ui.services import to_qimage
+
+from conftest import wait_idle
 
 
-def settle(app, window, timeout=15):
-    start = time.monotonic()
-    while time.monotonic() - start < timeout:
-        app.processEvents()
-        busy = window.busy or any(w is not None and w.isRunning() for w in (window.worker, window.preview_worker))
-        if not busy and not window.timer.isActive() and not window.summary_timer.isActive() and not window.preview_pending:
-            return
-        time.sleep(.01)
-    raise AssertionError('UI background work did not complete')
+def image_mean(qimage):
+    ptr = qimage.constBits()
+    arr = np.frombuffer(ptr, np.uint8, qimage.sizeInBytes()).reshape(qimage.height(), qimage.bytesPerLine())
+    return float(arr[:, :qimage.width() * 3].mean())
 
 
-def test_folder_preview_rotation_and_ui(tmp_path):
-    app = QApplication.instance() or QApplication([])
-    app.setStyleSheet(STYLE)
-    Image.new('RGB', (1200, 800), '#ae806a').save(tmp_path / 'портрет.jpg', icc_profile=SRGB_BYTES)
-    window = MainWindow()
-    window.apply_settings(Settings())
-    window.show()
-    window.load_folder(tmp_path)
-    settle(app, window)
-    assert len(window.photos) == 1
-    assert window.mode == 'batch'
-    assert window.preview.picture is None
-    window.show_review()
-    settle(app, window)
-    assert window.preview.picture is not None
-    assert window.export_btn.isEnabled()
-    assert '1772' in window.info.text()
-    window.fit.setCurrentIndex(1)
-    window.edits[str(window.photos[0].path)] = Edit(rotation=90, zoom=1.5, manual_crop=True)
-    window.schedule_preview()
-    settle(app, window)
-    assert '1181' in window.info.text()
-    im = Image.new('RGB', (900, 600), '#ae806a')
-    dialog = CropDialog(im, Settings(), Edit(), window)
-    dialog.show()
-    app.processEvents()
-    dialog.view_mode.setCurrentIndex(1)
-    app.processEvents()
-    assert dialog.canvas.rect.width() > 0
-    dialog.rotate(90)
-    assert dialog.canvas.im.size == (600, 900)
-    dialog.set_zoom(200)
-    assert dialog.edit.zoom == 2
-    dialog.reset()
-    assert dialog.edit == Edit()
-    dialog.close()
-    window.close()
-    app.processEvents()
+@pytest.fixture
+def window(desktop_runtime, photo_folder):
+    w = MainWindow()
+    w.resize(1400, 900)
+    w.show()
+    w.load_folder(photo_folder)
+    wait_idle(desktop_runtime, w)
+    yield w
+    w.close()
 
 
-def test_export_from_interface(tmp_path, monkeypatch):
-    from PySide6.QtWidgets import QMessageBox
-    monkeypatch.setattr(QMessageBox, 'exec', lambda self: QMessageBox.StandardButton.Ok)
-    app = QApplication.instance() or QApplication([])
-    Image.new('RGB', (1000, 1600), '#8bdbbd').save(tmp_path / 'test.jpg', icc_profile=SRGB_BYTES)
-    window = MainWindow()
-    window.apply_settings(Settings())
-    window.show()
-    window.load_folder(tmp_path)
-    settle(app, window)
-    assert window.preset.currentText() == '10 × 15 см'
-    window.width.setValue(123)
-    assert window.preset.currentText() == 'Свой размер'
-    window.preflight()
+def test_folder_opens_and_first_photo_renders(desktop_runtime, window):
+    assert len(window.photos) == 3 and window.current == 0
+    assert window.viewer.fit_img is not None and window.viewer.mode == 'image'
+    assert window.export_btn.text() == 'Подготовить 3 фото' and window.export_btn.isEnabled()
+    assert window.strip.model_.rowCount() == 3
+
+
+def test_batch_exposure_slider_updates_preview_live(desktop_runtime, window):
+    before = image_mean(window.viewer.fit_img)
+    slider = window.inspector.batch_controls['exposure']
+    slider.setValue(1.5, emit=True)          # emits valueChanged like a drag
+    slider.editingFinished.emit()
+    wait_idle(desktop_runtime, window)
+    assert window.settings.adjust.exposure == 1.5
+    assert image_mean(window.viewer.fit_img) > before + 10
+
+
+def test_photo_scope_saturation_affects_only_that_photo(desktop_runtime, window):
+    window.inspector.set_scope('photo')
+    sat = window.inspector.photo_controls['saturation']
+    sat.setValue(-100, emit=True)
+    sat.editingFinished.emit()
+    wait_idle(desktop_runtime, window)
+    path = str(window.photos[0].path)
+    assert window.edits[path].offsets == {'saturation': -100}
+    img = window.viewer.fit_img
+    arr = np.frombuffer(img.constBits(), np.uint8, img.sizeInBytes()).reshape(img.height(), img.bytesPerLine())[:, :img.width() * 3]
+    rgb = arr.reshape(img.height(), img.width(), 3).astype(int)
+    assert np.abs(rgb[..., 0] - rgb[..., 2]).max() <= 2           # grey on screen before any "apply"
+    assert window.settings.adjust.saturation == 0                  # preset untouched
+    window.strip.select_row(1)
+    wait_idle(desktop_runtime, window)
+    assert str(window.photos[1].path) not in window.edits
+    assert window.strip.model_.badges[path]['edited']
+
+
+def test_saved_preset_appears_selected_and_is_editable(desktop_runtime, window, monkeypatch):
+    monkeypatch.setattr(QInputDialog, 'getText', staticmethod(lambda *a, **k: ('Саша · глянец', True)))
+    window.apply_preset('builtin:lab_10x15')
+    window.inspector.batch_controls['vibrance'].setValue(30, emit=True)
+    window.inspector.batch_controls['vibrance'].editingFinished.emit()
+    assert window.presets.dirty
+    window.save_preset_as()
+    assert window.active_id == 'user:Саша · глянец' and not window._dirty()
+    names = [window.presets.list.item(i).text() for i in range(window.presets.list.count())]
+    assert 'Саша · глянец' in names
+    # Edit the saved preset and save in place.
+    window.inspector.batch_controls['contrast'].setValue(15, emit=True)
+    window.inspector.batch_controls['contrast'].editingFinished.emit()
+    assert window._dirty() and window.presets.save_btn.isVisibleTo(window.presets)
+    window.save_preset()
+    assert not window._dirty()
+    reloaded = window.library.__class__(window.library.folder).get('user:Саша · глянец')
+    assert reloaded.settings.adjust.contrast == 15 and reloaded.settings.adjust.vibrance == 30
+    # Switching away and back restores exactly the saved values.
+    window.apply_preset('builtin:original')
+    window.apply_preset('user:Саша · глянец')
+    assert window.settings.adjust.contrast == 15 and window.inspector.batch_controls['contrast'].value() == 15
+
+
+def test_undo_redo(desktop_runtime, window):
+    window.apply_preset('builtin:web')
+    window.apply_preset('builtin:archive_tiff')
+    assert window.settings.format == 'TIFF'
+    window.undo()
+    assert window.settings.format == 'JPEG' and window.settings.long_edge == 2048
+    window.redo()
+    assert window.settings.format == 'TIFF'
+    wait_idle(desktop_runtime, window)
+
+
+def test_size_modes_and_4k(desktop_runtime, window):
+    window.inspector.batch_controls['size_mode'].changed.emit('pixels')
+    window.inspector.batch_controls['pixel_preset'].setCurrentIndex(1)
+    window.inspector._pixel_preset_chosen(1)
+    assert (window.settings.pixel_width, window.settings.pixel_height) == (3840, 2160)
+    window.inspector.batch_controls['size_mode'].changed.emit('long_edge')
+    window.inspector._set('long_edge', 3840, commit=True, refresh=True)
+    wait_idle(desktop_runtime, window)
+    assert window.viewer.canvas == (3840, 2560)
+
+
+def test_crop_mode_and_rotation(desktop_runtime, window):
+    window.apply_preset('builtin:lab_10x15')
+    window.set_crop_mode(True)
+    wait_idle(desktop_runtime, window)
+    assert window.viewer.mode == 'crop' and window.viewer.crop is not None
+    window.viewer.cropEdited.emit(.3, .5, 1.4)
+    edit = window.edits[str(window.photos[0].path)]
+    assert edit.manual_crop and edit.zoom == 1.4
+    window.set_crop_mode(False)
+    window.rotate(90)
+    wait_idle(desktop_runtime, window)
+    assert window.edits[str(window.photos[0].path)].rotation == 90
+    assert window.viewer.canvas[1] > window.viewer.canvas[0]
+
+
+def test_compare_shows_before_image(desktop_runtime, window):
+    window.apply_preset('builtin:smart')
+    window.compare_btn.setChecked(True)
+    wait_idle(desktop_runtime, window)
+    assert window.viewer.fit_before is not None and window.viewer.compare
+
+
+def test_neural_shows_progress_and_result_at_100(desktop_runtime, window):
+    window.strip.select_row(2)                    # 300×200 photo
+    wait_idle(desktop_runtime, window)
+    window.apply_preset('builtin:upscale_small')
+    window.inspector.batch_controls['upscaler'].changed.emit('fsrcnn')
+    statuses = []
+    window.service.status.connect(lambda g, text, p: statuses.append(text))
+    window.viewer.set_zoom(1.0)
+    wait_idle(desktop_runtime, window, 120)
+    deadline = time.monotonic() + 60
+    while window.viewer.roi_img is None and time.monotonic() < deadline:
+        desktop_runtime.processEvents()
+        time.sleep(.02)
+    assert window.viewer.roi_img is not None
+    assert any('Нейросеть' in s for s in statuses)
+    assert any('FSRCNN' in n for n in window.last_result.notes)
+
+
+def test_export_from_ui(desktop_runtime, window):
+    window.apply_preset('builtin:web')
     window.export()
-    settle(app, window)
-    assert window.last_output.is_dir()
-    assert (window.last_output / 'report.json').exists()
-    with Image.open(window.last_output / 'test.jpg.jpg') as im:
-        assert im.size == (1453, 1772)
-    assert window.output_btn.isEnabled() and window.export_btn.isEnabled()
-    assert window.mode == 'done'
-    assert 'Готово: 1' in window.done_summary.text()
+    wait_idle(desktop_runtime, window, 120)
+    assert window.toast.isVisible() and 'Готово: 3 из 3' in window.toast.title.text()
+    out = window.last_output
+    assert len(list(out.glob('*.jpg'))) == 3 and (out / 'report.csv').exists()
+
+
+def test_session_edits_survive_restart(desktop_runtime, window, photo_folder):
+    window.rotate(90)
+    window._save_session()
     window.close()
+    again = MainWindow()
+    again.show()
+    again.load_folder(photo_folder)
+    wait_idle(desktop_runtime, again)
+    assert again.edits[str(window.photos[0].path)].rotation == 90
+    again.close()
 
 
-def test_algorithm_and_named_preset_library(tmp_path, monkeypatch):
-    from PySide6.QtCore import QSettings
-    from PySide6.QtWidgets import QInputDialog
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow()
-    window.store = QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat)
-    window.refresh_library()
-    window.apply_settings(Settings())
-    window.enhancement_preset.setCurrentIndex(window.enhancement_preset.findData('portrait'))
-    assert window.settings().highlights == .3
-    assert window.settings().enhancement_preset == 'portrait'
-    window.algorithm_controls['clarity'].setValue(25)
-    assert window.settings().enhancement_preset == 'custom'
-    monkeypatch.setattr(QInputDialog, 'getText', lambda *a: ('Моя бумага', True))
-    window.save_library()
-    saved = window.settings()
-    window.apply_settings(Settings())
-    assert window.settings().clarity == 0
-    index = window.recipe_library.findData('Моя бумага')
-    assert index > 0
-    window.load_library(index)
-    assert window.settings() == saved
-    window.timer.stop()
-    window.close()
+def test_empty_folder_shows_message(desktop_runtime, tmp_path):
+    w = MainWindow()
+    w.show()
+    w.load_folder(tmp_path)
+    wait_idle(desktop_runtime, w)
+    assert w.viewer.mode == 'empty' and w.toast.isVisible()
+    assert not w.export_btn.isEnabled()
+    w.close()
 
 
-def test_advanced_panels_are_collapsed_and_reveal_on_demand():
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow()
-    window.apply_settings(Settings())
-    window.show()
-    app.processEvents()
-    assert window.advanced_correction.body.isHidden()
-    assert window.geometry_disclosure.body.isHidden()
-    assert window.ai_disclosure.body.isHidden()
-    assert window.icc_button.isHidden()
-    window.advanced_correction.toggle.click()
-    assert not window.advanced_correction.body.isHidden()
-    window.preset.setCurrentIndex(window.preset.count() - 1)
-    assert not window.geometry_disclosure.body.isHidden()
-    window.space.setCurrentIndex(1)
-    assert not window.icc_button.isHidden()
-    window.ai_disclosure.toggle.click()
-    window.upscaler.setCurrentIndex(1)
-    assert window.settings().upscaler == 'fsrcnn'
-    assert 'включено' in window.ai_disclosure.toggle.text()
-    window.timer.stop()
-    window.close()
-
-
-def test_batch_preset_exports_whole_folder_without_preview(tmp_path, monkeypatch):
-    import json
-    import printprep.ui as ui
-    app = QApplication.instance() or QApplication([])
-    for name in ('first.jpg', 'second.jpg', 'third.jpg'):
-        Image.new('RGB', (500, 700), '#c0a68a').save(tmp_path / name, icc_profile=SRGB_BYTES)
-    window = MainWindow()
-    window.apply_settings(Settings())
-    window.show()
-    preview_loads = []
-    monkeypatch.setattr(ui, 'load_rgb', lambda *args, **kwargs: preview_loads.append(args))
-    window.load_folder(tmp_path)
-    settle(app, window)
-    assert window.mode == 'batch'
-    assert preview_loads == []
-    assert window.list.currentRow() == -1
-    index = window.recipe_library.findData('builtin:photo_13x18')
-    window.recipe_library.setCurrentIndex(index)
-    window.recipe_library.activated.emit(index)
-    settle(app, window)
-    assert window.settings().width_mm == 130 and window.settings().height_mm == 180
-    assert '13 × 18' in window.batch_summary.text()
-    assert '3 фото' in window.export_btn.text()
-    assert preview_loads == []
-    window.export_btn.click()
-    settle(app, window)
-    assert window.mode == 'done'
-    report = json.loads((window.last_output / 'report.json').read_text())
-    assert len(report['results']) == 3
-    assert all(r['status'] == 'ok' for r in report['results'])
-    assert report['settings']['width_mm'] == 130
-    assert preview_loads == []
-    assert len(list(tmp_path.glob('*.jpg'))) == 3
-    window.show_batch()
-    assert window.mode == 'batch'
-    window.close()
-
-
-def test_settings_cancel_rolls_back_whole_batch(tmp_path, monkeypatch):
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow()
-    window.apply_settings(Settings())
-    before = window.settings()
-    def reject():
-        window.width.setValue(250)
-        window.upscaler.setCurrentIndex(1)
-        return 0
-    monkeypatch.setattr(window.settings_dialog, 'exec', reject)
-    window.open_settings()
-    assert window.settings() == before
-    window.close()
-
-
-def test_empty_folder_has_actionable_message(tmp_path):
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow()
-    window.show()
-    window.load_folder(tmp_path)
-    settle(app, window)
-    assert window.mode == 'welcome'
-    assert not window.export_btn.isEnabled()
-    assert 'нет поддерживаемых фотографий' in window.welcome_feedback.text()
-    window.close()
-
-
-def test_small_window_scrolls_presets_without_overlapping(tmp_path):
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow()
-    window.apply_settings(Settings())
-    window.resize(1080, 760)
-    window.show()
-    Image.new('RGB', (800, 1200)).save(tmp_path / 'test.jpg')
-    window.load_folder(tmp_path)
-    settle(app, window)
-    first = window.batch_cards['original'].geometry()
-    second_row = window.batch_cards['4k'].geometry()
-    assert first.bottom() < second_row.top()
-    assert window.batch_scroll.verticalScrollBar().maximum() > 0
-    assert window.export_btn.isVisible() and window.action_bar.isVisible()
-    window.close()
+def test_to_qimage_handles_float_and_uint8():
+    assert to_qimage(np.zeros((4, 5, 3), np.uint8)).size().width() == 5
+    assert to_qimage(np.ones((4, 5, 3), np.float32)).pixelColor(0, 0).red() == 255

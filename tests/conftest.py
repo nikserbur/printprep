@@ -1,17 +1,32 @@
-"""Own Qt and OpenCV native lifetimes explicitly for the test session."""
+"""Shared fixtures: offscreen Qt with real fonts, isolated preferences, synthetic photos."""
 import os
+import sys
+from pathlib import Path
+
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+if sys.platform == 'win32':
+    os.environ.setdefault('QT_QPA_FONTDIR', r'C:\Windows\Fonts')
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import numpy as np
 import pytest
+from PIL import Image
 
 
 @pytest.fixture(scope='session', autouse=True)
-def desktop_runtime():
+def desktop_runtime(tmp_path_factory):
+    from PySide6.QtCore import QCoreApplication, QEvent, QSettings, QStandardPaths
     from PySide6.QtWidgets import QApplication
-    from PySide6.QtCore import QCoreApplication, QEvent
+    root = tmp_path_factory.mktemp('prefs')
+    QStandardPaths.setTestModeEnabled(True)
+    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(root))
     app = QApplication.instance() or QApplication([])
+    from printprep.ui.app import setup
+    setup(app)
     yield app
-    from printprep.upscale import release_network
-    release_network()
+    from printprep.neural import release
+    release()
     for widget in app.topLevelWidgets():
         widget.close()
         widget.deleteLater()
@@ -20,7 +35,49 @@ def desktop_runtime():
 
 @pytest.fixture(autouse=True)
 def isolated_preferences(tmp_path, monkeypatch):
-    """Tests never replace a user's remembered settings or preset library."""
-    from PySide6.QtCore import QSettings
-    import printprep.ui
-    monkeypatch.setattr(printprep.ui, 'QSettings', lambda *args: QSettings(str(tmp_path / 'printprep.ini'), QSettings.Format.IniFormat))
+    """Every test gets its own QSettings store and app-data folder."""
+    from PySide6.QtCore import QSettings, QStandardPaths
+    import printprep.ui.main_window as mw
+    import printprep.ui.inspector as insp
+    ini = tmp_path / 'settings.ini'
+    monkeypatch.setattr(mw, 'QSettings', lambda *a: QSettings(str(ini.with_name(f'{"_".join(a) or "x"}.ini')), QSettings.Format.IniFormat))
+    monkeypatch.setattr(insp, 'QSettings', lambda *a: QSettings(str(ini), QSettings.Format.IniFormat))
+    monkeypatch.setattr(QStandardPaths, 'writableLocation', staticmethod(lambda *_: str(tmp_path / 'appdata')))
+
+
+def gradient_image(w=1200, h=800, seed=0, noise=0.):
+    rng = np.random.default_rng(seed)
+    x = np.linspace(0, 1, w, dtype=np.float32)
+    y = np.linspace(0, 1, h, dtype=np.float32)[:, None]
+    img = np.stack(np.broadcast_arrays(.15 + .7 * x[None, :], .1 + .6 * y, .2 + .5 * (1 - x[None, :]) * (1 - y)), axis=2)
+    img = img * 255 + rng.normal(0, noise, img.shape)
+    img[h // 3:h // 2, w // 3:w // 2] = (235, 235, 235)
+    img[h // 2:2 * h // 3, w // 2:2 * w // 3] = (20, 20, 20)
+    return np.clip(img, 0, 255).astype(np.uint8)
+
+
+@pytest.fixture
+def photo_folder(tmp_path):
+    folder = tmp_path / 'Фото с пробелом'
+    folder.mkdir()
+    Image.fromarray(gradient_image(1200, 800)).save(folder / 'a_landscape.jpg', quality=95)
+    Image.fromarray(gradient_image(600, 900, seed=1)).save(folder / 'b_portrait.png')
+    Image.fromarray(gradient_image(300, 200, seed=2)).save(folder / 'c_small.jpg', quality=90)
+    return folder
+
+
+def wait_idle(app, window, timeout=60):
+    import time
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        app.processEvents()
+        scanning = window.scan_worker is not None and window.scan_worker.is_alive()
+        exporting = window.export_job is not None and window.export_job.running()
+        if not scanning and not exporting and window.service.is_idle() and not window.preview_timer.isActive():
+            for _ in range(5):
+                app.processEvents()
+                time.sleep(.01)
+            if window.service.is_idle() and not window.preview_timer.isActive():
+                return
+        time.sleep(.01)
+    raise AssertionError('UI did not become idle')

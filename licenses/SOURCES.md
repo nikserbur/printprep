@@ -16,3 +16,8 @@ of all Qt build configurations or external printer profiles.
 - FSRCNN-Apache-2.0.txt:
   https://github.com/Saafke/FSRCNN_Tensorflow/blob/master/LICENSE
   Pretrained weights and attribution: assets/models/README.md.
+
+- Real-ESRGAN-BSD-3-Clause.txt:
+  https://github.com/xinntao/Real-ESRGAN/blob/master/LICENSE (downloaded 2026-10-16)
+- YuNet-MIT.txt:
+  https://huggingface.co/opencv/face_detection_yunet/blob/main/LICENSE (downloaded 2026-10-16)
