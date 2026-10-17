@@ -62,7 +62,7 @@ def test_enhancement_is_cached_and_only_used_when_enlarging(tmp_path):
     assert r.neural and r.image.shape[:2] == (450, 600)
     plain = render(src, s, Edit())
     assert np.abs(r.image - plain.image).mean() > .002          # the network visibly changes the image
-    weak = render(src, replace(s, neural_strength=0), Edit(), enhanced_source=entry)
+    weak = render(src, replace(s, neural_strength=0, neural_detail=0), Edit(), enhanced_source=entry)
     assert np.abs(weak.image - plain.image).max() < 2 / 255       # strength 0 equals plain
     small = Settings(size_mode='long_edge', long_edge=220, neural=True)
     assert not neural_status(src, small, Edit(), plan(src, small, Edit()))[0]

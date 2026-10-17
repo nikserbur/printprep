@@ -17,6 +17,7 @@ from . import __version__
 from .imageio import inspect, read_exif, save
 from .model import Edit, Settings
 from .pipeline import AnalysisCache, Source, assess, enhanced, neural_status, plan, render_fast, to_output
+from .i18n import tr
 
 EXTENSIONS = {'JPEG': '.jpg', 'TIFF': '.tif', 'PNG': '.png'}
 STRIP_PIXELS = 6_000_000
@@ -88,7 +89,7 @@ def render_file(source: Source, settings: Settings, edit: Edit, cancel=None, pro
     total = (h + rows - 1) // rows
     for index, top in enumerate(range(0, h, rows)):
         if cancel and cancel():
-            raise InterruptedError('Остановлено.')
+            raise InterruptedError(tr('Остановлено.'))
         r = render_fast(source, settings, edit, k=1, region=(0, top, w, min(rows, h - top)),
                         enhanced_source=entry, analysis_cache=analysis_cache)
         strips.append((top, r.image))
@@ -132,7 +133,7 @@ def export_batch(folder: Path, photos, settings: Settings, edits: dict, *, prese
     def job(photo):
         row = {'source': str(photo.path), 'output': '', 'status': 'error', 'size': '', 'ppi': '', 'notes': '', 'error': ''}
         if cancel.is_set():
-            row.update(status='cancelled', error='Остановлено до начала.')
+            row.update(status='cancelled', error=tr('Остановлено до начала.'))
             return row
         try:
             edit = edits.get(str(photo.path)) or Edit()
@@ -141,9 +142,9 @@ def export_batch(folder: Path, photos, settings: Settings, edits: dict, *, prese
             check = assess(info.size, settings, edit)
             row['ppi'] = check['ppi'] or ''
             if check['upscale'] and not settings.allow_upscale:
-                row.update(status='skipped', error='Увеличение запрещено настройками: снимок меньше нужного размера.')
+                row.update(status='skipped', error=tr('Увеличение запрещено настройками: снимок меньше нужного размера.'))
                 return row
-            source = Source.open(info, analysis_cache)
+            source = Source.open(info, analysis_cache, full=True)
             fp = (lambda f: file_progress(photo.path, f)) if file_progress else None
             array, mode, icc, notes, _ = render_file(source, settings, edit, cancel.is_set, fp, analysis_cache)
             dest = targets[str(photo.path)]
@@ -153,11 +154,11 @@ def export_batch(folder: Path, photos, settings: Settings, edits: dict, *, prese
             row.update(output=str(dest), status='ok', size=f'{array.shape[1]}×{array.shape[0]}',
                        notes=' | '.join(info.warnings + source.notes + check['warnings'] + auto_notes + notes))
         except InterruptedError:
-            row.update(status='cancelled', error='Остановлено.')
+            row.update(status='cancelled', error=tr('Остановлено.'))
         except Exception as e:
             from .neural import Cancelled
             if isinstance(e, Cancelled):
-                row.update(status='cancelled', error='Остановлено.')
+                row.update(status='cancelled', error=tr('Остановлено.'))
             else:
                 row['error'] = str(e) or e.__class__.__name__
         return row

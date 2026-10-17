@@ -9,6 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from .model import BUILTIN_PRESETS, Edit, Settings
+from .i18n import tr
 
 LIBRARY_VERSION = 2
 MAX_FILE = 5_000_000
@@ -24,7 +25,7 @@ def _atomic_write(path: Path, text: str):
 
 def _read_json(path: Path):
     if path.stat().st_size > MAX_FILE:
-        raise ValueError('Файл слишком большой.')
+        raise ValueError(tr('Файл слишком большой.'))
     return json.loads(path.read_text(encoding='utf-8'))
 
 
@@ -68,8 +69,8 @@ class PresetLibrary:
         _atomic_write(self.path, json.dumps({'version': LIBRARY_VERSION, 'presets': presets}, ensure_ascii=False, indent=2))
 
     def all(self):
-        items = [Preset('builtin:' + key, p['name'], replace(p['settings'], adjust=replace(p['settings'].adjust)),
-                        p['note'], p['group'], True) for key, p in BUILTIN_PRESETS.items()]
+        items = [Preset('builtin:' + key, tr(p['name']), replace(p['settings'], adjust=replace(p['settings'].adjust)),
+                        tr(p['note']), tr(p['group']), True) for key, p in BUILTIN_PRESETS.items()]
         for name in sorted(self.user, key=str.casefold):
             entry = self.user[name]
             items.append(Preset('user:' + name, name, Settings.from_dict(entry['settings']), entry['note'] or describe(Settings.from_dict(entry['settings'])), 'Мои'))
@@ -83,7 +84,7 @@ class PresetLibrary:
     def put(self, name, settings: Settings, note=''):
         name = name.strip()[:80]
         if not name:
-            raise ValueError('Введите название пресета.')
+            raise ValueError(tr('Введите название пресета.'))
         settings.validate(check_icc=False)
         self.user[name] = dict(note=note, settings=settings.to_dict())
         self.save()
@@ -93,9 +94,9 @@ class PresetLibrary:
         old = pid.split(':', 1)[1]
         new = new.strip()[:80]
         if not new:
-            raise ValueError('Введите название.')
+            raise ValueError(tr('Введите название.'))
         if new != old and new in self.user:
-            raise ValueError('Пресет с таким названием уже есть.')
+            raise ValueError(tr('Пресет с таким названием уже есть.'))
         self.user[new] = self.user.pop(old)
         self.save()
         return 'user:' + new
@@ -135,18 +136,18 @@ class PresetLibrary:
 
 def describe(s: Settings):
     if s.size_mode == 'original':
-        size = 'исходный размер'
+        size = tr('исходный размер')
     elif s.size_mode == 'long_edge':
-        size = f'{s.long_edge} px по длинной стороне'
+        size = tr('{long_edge} px по длинной стороне', long_edge=s.long_edge)
     elif s.size_mode == 'pixels':
         size = f'{s.pixel_width}×{s.pixel_height} px'
     else:
-        size = f'{s.width_mm:g}×{s.height_mm:g} мм · {s.dpi} PPI'
-    parts = [size, s.format + (' 16 бит' if s.bit_depth == 16 else '')]
+        size = tr('{width_mm:g}×{height_mm:g} мм · {dpi} PPI', width_mm=s.width_mm, height_mm=s.height_mm, dpi=s.dpi)
+    parts = [size, s.format + (tr(' 16 бит') if s.bit_depth == 16 else '')]
     if s.adjust.auto:
-        parts.append(f'авто {s.adjust.auto_strength:.0f}%')
+        parts.append(tr('авто {auto_strength:.0f}%', auto_strength=s.adjust.auto_strength))
     if s.neural:
-        parts.append('нейросеть')
+        parts.append(tr('нейросеть'))
     return ' · '.join(parts)
 
 
@@ -160,9 +161,9 @@ def read_preset_file(path: Path):
     """Returns (name, settings, edits_by_relative_path). Accepts presets and 1.x/2.x recipes."""
     data = _read_json(Path(path))
     if not isinstance(data, dict) or 'settings' not in data:
-        raise ValueError('Это не файл пресета Print Prep.')
+        raise ValueError(tr('Это не файл пресета Print Prep.'))
     if data.get('version') not in (1, 2):
-        raise ValueError('Неизвестная версия файла.')
+        raise ValueError(tr('Неизвестная версия файла.'))
     settings = Settings.from_dict(data['settings'])
     settings.validate(check_icc=False)
     edits = {}

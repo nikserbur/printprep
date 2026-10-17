@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QAbstractItemView, QListView, QStyle, QStyledItemD
 
 from . import icons
 from .theme import T
+from ..i18n import tr
 
 THUMB_H = 84
 ITEM_W = 118
@@ -31,12 +32,12 @@ class StripModel(QAbstractListModel):
             return photo.path.name
         if role == Qt.ItemDataRole.ToolTipRole:
             badge = self.badges.get(str(photo.path), {})
-            lines = [photo.path.name, f'{photo.size[0]} × {photo.size[1]} px · {photo.megapixels:.1f} Мп · {photo.bits} бит',
+            lines = [photo.path.name, tr('{v} × {v2} px · {megapixels:.1f} Мп · {bits} бит', v=photo.size[0], v2=photo.size[1], megapixels=photo.megapixels, bits=photo.bits),
                      photo.profile]
             if badge.get('edited'):
-                lines.append('Есть правки этого снимка')
+                lines.append(tr('Есть правки этого снимка'))
             if badge.get('warning'):
-                lines.append('Внимание: ' + badge['warning'])
+                lines.append(tr('Внимание: ') + badge['warning'])
             return '\n'.join(lines)
         if role == Qt.ItemDataRole.UserRole:
             return photo
@@ -108,8 +109,9 @@ class StripDelegate(QStyledItemDelegate):
             frame = QRectF(box.center().x() - w / 2, box.center().y() - h / 2, w, h)
             p.setPen(Qt.PenStyle.NoPen)
             phase = (self.view.phase % 60) / 60
-            shade = 34 + int(10 * abs(phase - .5) * 2)
-            p.setBrush(QColor(shade, shade + 1, shade + 4))
+            base = QColor(T['skeleton'])
+            lift = int(10 * abs(phase - .5) * 2) * (1 if T['name'] == 'dark' else -1)
+            p.setBrush(QColor(min(255, max(0, base.red() + lift)), min(255, max(0, base.green() + lift)), min(255, max(0, base.blue() + lift))))
             p.drawRoundedRect(frame, 5, 5)
         if current or selected:
             p.setBrush(Qt.BrushStyle.NoBrush)
@@ -156,7 +158,7 @@ class Filmstrip(QListView):
         self.setMouseTracking(True)
         self.setFixedHeight(ITEM_H + 16)
         self.setSpacing(0)
-        self.setAccessibleName('Лента снимков')
+        self.setAccessibleName(tr('Лента снимков'))
         self.phase = 0
         self.shimmer = QTimer(self)
         self.shimmer.setInterval(40)

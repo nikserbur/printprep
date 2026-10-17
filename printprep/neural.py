@@ -1,7 +1,8 @@
 """Bundled offline networks run by OpenCV DNN on the CPU. Nothing is downloaded at runtime.
 
 * Real-ESRGAN general x4v3 (BSD-3) — the single enhancement network: enlargement with
-  detail restoration and JPEG/noise cleanup.
+  detail restoration and JPEG/noise cleanup. Its official weak-denoise twin (wdn-x4v3)
+  is interpolated in for the 'details ↔ cleanliness' control, so texture is not smeared.
 * YuNet 2023mar (MIT) — face detection for framing and face-aware exposure; falls back
   to the Haar cascade shipped with OpenCV.
 
@@ -19,14 +20,17 @@ from collections import OrderedDict
 from pathlib import Path
 
 import numpy as np
+from .i18n import tr
 
 ROOT = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parents[1]))
 MODELS = ROOT / 'assets' / 'models'
 SR_FILE = 'realesr-general-x4v3.onnx'
+WDN_FILE = 'realesr-general-wdn-x4v3.npz'
 FACE_FILE = 'face_detection_yunet_2023mar.onnx'
 CHECKSUMS = {
     SR_FILE: '924ebad6532777303582d4ce7811849b88869231a3ae7093e0f21200249df8d5',
     FACE_FILE: '8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4',
+    WDN_FILE: '2786aa84e30e0b75b85bca3fc1f7ea7a70420033469ad60440bd109b4608c534',
 }
 FACTOR = 4
 TILE = 192
@@ -47,9 +51,9 @@ def _model_path(name):
     with _verify_lock:
         if name not in _verified:
             if not path.exists():
-                raise FileNotFoundError(f'Нет файла модели {name}. Переустановите Print Prep.')
+                raise FileNotFoundError(tr('Нет файла модели {name}. Переустановите Print Prep.', name=name))
             if hashlib.sha256(path.read_bytes()).hexdigest() != CHECKSUMS[name]:
-                raise ValueError(f'Контрольная сумма модели {name} не совпала. Переустановите Print Prep.')
+                raise ValueError(tr('Контрольная сумма модели {name} не совпала. Переустановите Print Prep.', name=name))
             _verified[name] = path
     return _verified[name]
 
@@ -62,15 +66,32 @@ def available():
         return False
 
 
-def _net():
-    net = _local.__dict__.get('sr')
+def denoise_level(detail):
+    """'Детали ↔ Чистота' slider (0 = cleanest, 100 = keep all texture) → Real-ESRGAN denoise
+    strength, quantised so nearby slider values share a cached network and result."""
+    return round((1 - min(100., max(0., detail)) / 100) * 20) / 20
+
+
+def _net(level=1.0):
+    """OpenCV network for a denoise strength. Like `--denoise_strength` in Real-ESRGAN, the
+    weights are interpolated between realesr-general-x4v3 (1.0: strong cleanup) and
+    realesr-general-wdn-x4v3 (0.0: keeps grain and fine texture)."""
+    nets = _local.__dict__.setdefault('sr', {})
+    net = nets.get(level)
     if net is None:
         import cv2
+        from .onnx_weights import patch, read_initializers
         cv2.setNumThreads(max(1, os.cpu_count() or 2))
-        net = cv2.dnn.readNetFromONNX(str(_model_path(SR_FILE)))
+        data = _model_path(SR_FILE).read_bytes()
+        if level < 1:
+            wdn = np.load(_model_path(WDN_FILE))
+            base = dict(read_initializers(data))
+            data = patch(data, {k: level * base[k] + (1 - level) * wdn[k] for k in wdn.files})
+        net = cv2.dnn.readNetFromONNX(np.frombuffer(data, np.uint8))
         net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
         net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
-        _local.sr = net
+        nets.clear()                     # one network per thread is enough; keep memory flat
+        nets[level] = net
     return net
 
 
@@ -80,7 +101,7 @@ def estimate_seconds(width, height):
     return width * height / 1e6 * rate
 
 
-def upscale(image, progress=None, cancel=None, store_factor=FACTOR):
+def upscale(image, progress=None, cancel=None, store_factor=FACTOR, level=1.0):
     """×4 super-resolution of an sRGB-encoded float image in overlapping tiles.
 
     With store_factor=2 each ×4 tile is box-averaged to ×2 before it is stored, which
@@ -88,7 +109,7 @@ def upscale(image, progress=None, cancel=None, store_factor=FACTOR):
     called per tile; `cancel()` returning True raises Cancelled.
     """
     import cv2
-    net = _net()
+    net = _net(level)
     h, w = image.shape[:2]
     k = store_factor
     out = np.empty((h * k, w * k, 3), dtype=np.float32)
@@ -122,8 +143,8 @@ def upscale(image, progress=None, cancel=None, store_factor=FACTOR):
     return np.clip(out, 0, 1)
 
 
-def enhance(base, strength=1.0, progress=None, cancel=None):
-    """Enhance a whole oriented source (uint8/uint16). Returns a cache entry dict.
+def enhance(base, strength=1.0, progress=None, cancel=None, level=1.0):
+    """Enhance a whole oriented source (uint8/uint16) at a denoise level. Returns a cache entry.
 
     Small sources keep the full ×4 result; larger ones are stored at ×2 (enough for the
     enlargements that make sense in print, and four times less memory).
@@ -133,7 +154,7 @@ def enhance(base, strength=1.0, progress=None, cancel=None):
     src = base.astype(np.float32) / depth
     h, w = src.shape[:2]
     factor = FACTOR if h * w <= 1.2e6 else 2
-    sr = upscale(src, progress, cancel, store_factor=factor)
+    sr = upscale(src, progress, cancel, store_factor=factor, level=level)
     if strength < 1:
         plain = cv2.resize(src, (w * factor, h * factor), interpolation=cv2.INTER_LANCZOS4)
         sr = np.clip(plain + (sr - plain) * strength, 0, 1)

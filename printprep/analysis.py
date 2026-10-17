@@ -4,13 +4,16 @@ Runs on the deterministic analysis proxy (the same in preview and export), so th
 automatic corrections shown on screen are exactly what gets written. Results are
 suggestions in slider units; Adjust.auto_strength scales them.
 
-White balance follows the evaluation literature: Shades-of-Gray (Minkowski p=6),
-general Gray World and Gray-Edge are the most reliable classical estimators, so their
-consensus (plus near-neutral pixels and robust highlights) is used, with confidence
-from their agreement and a deliberately partial correction that keeps the mood of
-warm scenes. Black/white points follow the Lightroom habit of letting about 0.1 %
-of pixels clip; exposure aims the log-average at middle grey with a second opinion
-from faces and never darkens bright scenes unless highlights really clip.
+White balance votes in log-chroma space (near-neutral surfaces cluster at the
+illuminant), weighting textured surfaces above smooth sky or backdrops. A cast shifts
+shadows and highlights alike, while warm scene light (sunset, lamps) leaves shadows
+neutral: only the first is corrected almost fully. Detected skin must stay in the
+natural hue range. Black/white points follow the Lightroom habit of letting about
+0.1 % of pixels clip, at full strength only when both ends of the histogram are
+empty; shadows are lifted only where they hold detail; strong veils go to the
+dark-channel dehaze. Exposure aims the log-average at middle grey, also lifts frames
+whose highlights stop far short of white, takes faces as a second opinion and never
+darkens bright scenes unless highlights really clip. Measured with tools/eval_auto.py.
 """
 from __future__ import annotations
 
@@ -19,8 +22,10 @@ import math
 import numpy as np
 
 from .color import LUMA, decode, encode, to_oklab
+from .i18n import tr
 
 ANALYSIS_EDGE = 768
+VEIL_GAIN = 450
 
 
 def _proxy_float(proxy):
@@ -107,17 +112,30 @@ CHROMA_RANGE = .8
 CHROMA_BINS = 80
 
 
-def chroma_vote(lin):
+def texture_weight(lin):
+    """0.35..1 per pixel: textured surfaces vote more than smooth sky or studio backdrops,
+    whose colour is usually the subject's choice rather than the light's."""
+    import cv2
+    g = cv2.GaussianBlur(np.log(np.maximum(lin @ LUMA, 1e-3)).astype(np.float32), (0, 0), 1.2)
+    mag = np.hypot(cv2.Sobel(g, cv2.CV_32F, 1, 0), cv2.Sobel(g, cv2.CV_32F, 0, 1))
+    mag = cv2.blur(mag, (9, 9))
+    return .35 + .65 * np.clip(mag / .25, 0, 1)
+
+
+def chroma_vote(lin, region=None, texture=None):
     """Illuminant by voting in log-chroma space (fixed-filter Convolutional Color Constancy).
 
     A white-balance error shifts every pixel by the same (log R/G, log B/G) vector, so the
     near-neutral surfaces of a scene form a dense cluster around the illuminant point. The
     histogram is smoothed, weighted by a prior that prefers casts along the warm–cool
-    (daylight) axis, and searched near the origin. Returns (u, v, confidence) or None.
+    (daylight) axis, and searched near the origin. `region` limits the voters (a tonal
+    band). Returns (u, v, confidence) or None.
     """
     import cv2
     y = lin @ LUMA
     valid = (lin.max(axis=2) < .95) & (y > .03) & (lin.min(axis=2) > 2e-3)
+    if region is not None:
+        valid &= region
     if valid.sum() < 500:
         return None
     px = lin[valid].astype(np.float64)
@@ -125,6 +143,8 @@ def chroma_vote(lin):
     v = np.log(px[:, 2] / px[:, 1])
     # Mid-tones vote most: deep shadows carry noisy, often tinted chroma.
     weight = np.clip((y[valid] - .03) / .2, 0, 1)
+    if texture is not None:
+        weight = weight * texture[valid]
     hist, _, _ = np.histogram2d(u, v, bins=CHROMA_BINS, range=[[-CHROMA_RANGE, CHROMA_RANGE]] * 2, weights=weight)
     density = cv2.GaussianBlur(hist.astype(np.float32), (0, 0), 1.5)
     step = 2 * CHROMA_RANGE / CHROMA_BINS
@@ -147,7 +167,8 @@ def chroma_vote(lin):
 
 def white_balance(lin):
     """Channel gains (luminance-preserving), confidence 0..1 and a short note."""
-    vote = chroma_vote(lin)
+    texture = texture_weight(lin)
+    vote = chroma_vote(lin, texture=texture)
     if vote is None:
         return np.ones(3, np.float32), 0., ''
     u, v, confidence = vote
@@ -160,7 +181,16 @@ def white_balance(lin):
     l0 -= l0.mean()
     temp = (l0[0] - l0[2]) / 2                  # > 0: light was bluish, warm it up
     tint = l0[1] - (l0[0] + l0[2]) / 2          # > 0: light was magenta, add green
-    keep_mood = .5 if temp < -.25 else .75      # cool warm scenes only partly: sunsets, candles, interiors
+    # A cast (wrong camera WB) shifts shadows and highlights alike. Warm scene light — sunset,
+    # tungsten lamps — warms the lit parts while shadows stay neutral or bluish from the sky.
+    y = lin @ LUMA
+    lit = chroma_vote(lin, y > np.percentile(y, 60), texture)
+    shade = chroma_vote(lin, y < np.percentile(y, 40), texture)
+    global_cast = lit is not None and shade is not None and math.hypot(lit[0] - shade[0], lit[1] - shade[1]) < .07
+    if global_cast:
+        keep_mood = .9
+    else:
+        keep_mood = .5 if temp < -.25 else .7   # cool warm scenes only partly: sunsets, candles, interiors
     temp *= (keep_mood if temp < 0 else .9) * confidence
     tint *= .9 * confidence
     temp, tint = float(np.clip(temp, -.3, .3)), float(np.clip(tint, -.15, .15))
@@ -169,8 +199,52 @@ def white_balance(lin):
     gains /= float(gains @ LUMA)
     note = ''
     if abs(temp) > .02 or abs(tint) > .02:
-        note = 'ББ: теплее' if temp > .02 else 'ББ: холоднее' if temp < -.02 else 'ББ: убран оттенок'
+        note = tr('ББ: теплее') if temp > .02 else tr('ББ: холоднее') if temp < -.02 else tr('ББ: убран оттенок')
     return gains.astype(np.float32), confidence, note
+
+
+SKIN_HUE = (25., 95.)     # Oklab hue of natural skin of any tone under neutral light, degrees
+
+
+def skin_hue(lin, faces):
+    """Median Oklab hue of the central face areas, or None without usable faces."""
+    if not faces:
+        return None
+    h, w = lin.shape[:2]
+    patches = []
+    for fx, fy, fw, fh, _ in faces[:4]:
+        x0, y0 = int((fx + fw * .3) * w), int((fy + fh * .35) * h)
+        x1, y1 = int((fx + fw * .7) * w), int((fy + fh * .75) * h)
+        patch = lin[max(0, y0):max(y0 + 1, y1), max(0, x0):max(x0 + 1, x1)].reshape(-1, 3)
+        if len(patch) >= 16:
+            patches.append(patch)
+    if not patches:
+        return None
+    lab = to_oklab(np.clip(np.median(np.concatenate(patches), axis=0), 0, 1)[None, None, :].astype(np.float32))[0, 0]
+    if lab[0] < .2 or math.hypot(lab[1], lab[2]) < .01:
+        return None                         # too dark or grey (B/W, heavy shadow): no opinion
+    return math.degrees(math.atan2(lab[2], lab[1]))
+
+
+def skin_guard(lin, gains, faces):
+    """Skin is a memory colour: people forgive a cast on a wall, not on a face. If the white
+    balance would push detected skin out of the natural hue range (green or purple faces),
+    pull the correction back toward neutral. Returns (gains, acted)."""
+    before, after = skin_hue(lin, faces), skin_hue(lin * gains, faces)
+    if after is None:
+        return gains, False
+    lo, hi = SKIN_HUE
+
+    def miss(hue):
+        return 0. if hue is None else max(0., lo - hue, hue - hi)
+    if miss(after) <= miss(before) + 3:
+        return gains, False
+    for k in (.6, .3):
+        g = np.exp(np.log(gains) * k)
+        g = (g / float(g @ LUMA)).astype(np.float32)
+        if miss(skin_hue(lin * g, faces)) <= miss(before) + 3:
+            return g, True
+    return np.ones(3, np.float32), True
 
 
 def estimate_noise(full):
@@ -198,6 +272,18 @@ def estimate_noise(full):
     return float(math.sqrt(math.pi / 2) * response[valid].mean() / 6)
 
 
+def shadow_detail(tone, mask):
+    """0..1: how much real texture the deep shadows carry (local contrast above the noise floor)."""
+    import cv2
+    if mask.mean() < .02:
+        return 0.
+    t = tone.astype(np.float32)
+    mean = cv2.blur(t, (5, 5))
+    std = np.sqrt(np.maximum(cv2.blur(t * t, (5, 5)) - mean * mean, 0))
+    level = float(np.median(std[mask]))
+    return float(np.clip((level - .006) / .014, 0, 1))
+
+
 def saliency_map(enc):
     """Spectral-residual saliency (Hou & Zhang 2007) blended with edge energy, ~128 px."""
     import cv2
@@ -217,21 +303,28 @@ def saliency_map(enc):
     return cv2.GaussianBlur(combined, (0, 0), 2)
 
 
-def analyze(proxy, full=None):
-    """Return a dict of automatic suggestions for this photo (JSON-safe except 'saliency')."""
+def analyze(proxy, source_long=None):
+    """Return a dict of automatic suggestions for this photo (JSON-safe except 'saliency').
+
+    `source_long` is the long edge of the original; noise measured on the proxy is scaled
+    back to it (averaging during the reduction lowers noise roughly with the scale).
+    """
     from .neural import detect_faces
     enc = _proxy_float(proxy)
     lin = decode(enc)
     notes = []
-    wb, wb_confidence, wb_note = white_balance(lin)
-    if wb_note:
-        notes.append(wb_note)
-    balanced = lin * wb
-    y = balanced @ LUMA
     try:
         faces = detect_faces(np.round(np.clip(enc, 0, 1) * 255).astype(np.uint8))
     except Exception:
         faces = []
+    wb, wb_confidence, wb_note = white_balance(lin)
+    wb, guarded = skin_guard(lin, wb, faces)
+    if guarded:
+        wb_note = tr('ББ: бережно к коже')
+    if wb_note:
+        notes.append(wb_note)
+    balanced = lin * wb
+    y = balanced @ LUMA
 
     # Exposure: log-average key toward middle grey, faces as a second opinion.
     valid = (y > .002) & (y < .97)
@@ -242,13 +335,16 @@ def analyze(proxy, full=None):
     # Underexposure shows as a low key *and* highlights that stop well short of white; a dark
     # frame with bright highlights is low-key on purpose and is left alone.
     headroom = max(0., math.log2(.92 / max(float(np.percentile(y, 99.9)), 1e-4)))
-    if deviation > .45:
-        ev = min(deviation - .35, headroom, 1.5)
+    if deviation > -.3:
+        key_ev = min(deviation - .35, headroom, 1.5) if deviation > .45 else 0.
+        # A frame of normal key whose brightest pixels stop far short of white is underexposed
+        # too (a bright scene shot dark); bright pastel frames are excluded by their high key.
+        head_ev = min(max(0., headroom - .2) * float(np.clip((deviation + .5) / .8, 0, 1)), 1.2)
+        ev = max(key_ev, head_ev)
         ev = ev if ev >= .15 else 0.
-    elif deviation > 0:
-        ev = 0.
     else:
-        ev = max(deviation * .6, -.8) * min(1., clipped * 15)
+        # Darken only a clearly bright frame that really loses highlights; high-key stays high-key.
+        ev = max(deviation * .6, -.8) * float(np.clip((clipped - .01) * 12, 0, 1))
     if faces:
         h, w = y.shape
         lums = []
@@ -262,10 +358,10 @@ def analyze(proxy, full=None):
             yf = float(np.median(lums))
             target = min(.42, max(.16, yf))      # respect any natural skin tone inside a broad range
             ev = .45 * ev + .55 * float(np.clip(math.log2(target / max(yf, 1e-4)), -.6, 1.0))
-            notes.append(f'Лица: {len(faces)}')
+            notes.append(tr('Лица: {n}', n=len(faces)))
     ev = float(np.clip(ev, -1.2, 1.5))
     if abs(ev) >= .1:
-        notes.append(f'Экспозиция {ev:+.1f} EV'.replace('-', '−'))
+        notes.append(tr('Экспозиция {ev:+.1f} EV', ev=ev).replace('-', '−'))
 
     p = encode(np.minimum(y * 2 ** ev, 1))
     low, high = (float(v) for v in np.percentile(p, (.1, 99.9)))
@@ -273,14 +369,21 @@ def analyze(proxy, full=None):
     s = {'exposure': ev}
     # Auto levels (as Photoshop's luminance auto-contrast): stretch so that ~0.1 % of pixels reach
     # black and white, only when the histogram clearly stops short — a flat, hazy or faded frame.
-    level_black = min(.12, (low - .01) * .8) if low > .05 else 0.
-    level_white = 1 - min(.12, (1 - high - .015) * .8) if high < .92 else 1.
+    # A histogram short at both ends is a flat, faded or hazy frame. Short at one end only is far
+    # more often a choice — pastel high-key, a matte look, a moody low-key — so it gets a nudge.
+    black_gap, white_gap = low > .05, high < .92
+    both = 1. if black_gap and white_gap else .35
+    level_black = min(.12, (low - .01) * .8) * both if black_gap else 0.
+    level_white = 1 - min(.12, (1 - high - .015) * .8) * both if white_gap else 1.
     s['level_black'], s['level_white'] = level_black, level_white
     stretched = np.clip((p - level_black) / max(.3, level_white - level_black), 0, 1)
     spread = float(np.std(stretched))
-    s['contrast'] = float(np.clip((.17 - spread) * 220, 0, 20))
+    s['contrast'] = float(np.clip((.17 - spread) * 220, 0, 20)) * both
+    # Lift shadows only where they hold detail: a flat black backdrop or night sky stays black.
+    deep_mask = stretched < .12
     deep = float((stretched < .06).mean())
-    s['shadows'] = float(np.clip((deep - .2) * 120, 0, 35)) if median < .3 else 0.
+    texture = shadow_detail(stretched, deep_mask)
+    s['shadows'] = float(np.clip((deep - .2) * 120, 0, 35)) * texture if median < .3 else 0.
     s['highlights'] = -float(np.clip((float((stretched > .97).mean()) - .02) * 500, 0, 45))
 
     lab = to_oklab(np.clip(balanced * 2 ** ev, 0, 1))
@@ -289,20 +392,27 @@ def analyze(proxy, full=None):
     mean_chroma = float(chroma[mid].mean()) if mid.any() else 0.
     if mean_chroma < .012:
         s['vibrance'] = 0.
-        notes.append('Монохромный снимок')
+        notes.append(tr('Монохромный снимок'))
     else:
         s['vibrance'] = float(np.clip((.04 - mean_chroma) * 500, 0, 15))
 
-    dark_channel = np.clip(balanced * 2 ** ev, 0, 1).min(axis=2)
-    haze = float(np.median(dark_channel))
-    # Auto levels already lift the veil; dehaze only for haze that survives the stretch.
-    s['dehaze'] = float(np.clip((haze - .3) * 100, 0, 20)) if low > .08 and level_black == 0 else 0.
+    # Nothing darker than a third of the scale is a veil — fog, glare through glass, a faded print
+    # scan — not a style. A luminance curve cannot bring its colour back, so the dark-channel
+    # dehaze removes it per channel; milder lifted blacks are left to auto levels.
+    # A veil also washes colour out; a bright, saturated graphic without darks is not hazy.
+    lit = np.clip(balanced * 2 ** ev, 0, 1)
+    dark_channel = lit.min(axis=2)
+    veil = float(np.percentile(dark_channel, 5))
+    saturation = float(np.median((lit.max(axis=2) - dark_channel) / np.maximum(lit.max(axis=2), 1e-3)))
+    s['dehaze'] = float(np.clip((veil - .05) * VEIL_GAIN, 0, 60) * np.clip((low - .25) / .1, 0, 1)
+                        * np.clip((.6 - saturation) / .25, 0, 1))
     if s['dehaze'] >= 5:
-        notes.append('Убрана дымка')
+        notes.append(tr('Убрана дымка'))
 
-    sigma = estimate_noise(full) if full is not None else 0.
+    ratio = max(proxy.shape[:2]) / max(1, source_long or max(proxy.shape[:2]))
+    sigma = estimate_noise(proxy) / max(ratio, .05) ** .8
     if sigma > 1.6:
-        notes.append('Шум: заметный' if sigma > 3.2 else 'Шум: небольшой')
+        notes.append(tr('Шум: заметный') if sigma > 3.2 else tr('Шум: небольшой'))
     return {
         'wb_gains': [float(v) for v in wb], 'wb_confidence': wb_confidence,
         'suggestions': {k: round(v, 3) for k, v in s.items()},

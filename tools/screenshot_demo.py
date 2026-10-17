@@ -1,6 +1,6 @@
 """Render interface screenshots from synthetic, non-personal demo photos.
 
-Usage: python tools/screenshot_demo.py [output_dir]   (offscreen; does not touch user presets)
+Usage: python tools/screenshot_demo.py [output_dir] [--lang=en|ru]   (offscreen; does not touch user settings)
 """
 import os
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
@@ -86,8 +86,15 @@ def wait_neural(app, window, seconds=120):
     wait(app, window)
 
 
+EN_NAMES = {'01_Горное_озеро.jpg': '01_Mountain_lake.jpg', '02_Портрет_тёплый_свет.jpg': '02_Portrait_warm_light.jpg',
+            '03_Вечер_шум.jpg': '03_Evening_noise.jpg', '04_Маленький_снимок.jpg': '04_Small_photo.jpg',
+            '05_Пляж.jpg': '05_Beach.jpg', '06_Туман.jpg': '06_Fog.jpg'}
+
+
 def main():
-    out = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / 'docs'
+    args = [a for a in sys.argv[1:] if not a.startswith('--')]
+    lang = next((a.split('=', 1)[1] for a in sys.argv[1:] if a.startswith('--lang=')), 'en')
+    out = Path(args[0]) if args else ROOT / 'docs'
     out.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='printprep-demo-') as temp:
         os.environ['APPDATA'] = str(Path(temp) / 'appdata')
@@ -95,14 +102,29 @@ def main():
         QStandardPaths.setTestModeEnabled(True)
         QSettings.setDefaultFormat(QSettings.Format.IniFormat)
         QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(Path(temp) / 'ini'))
-        folder = Path(temp) / 'Съёмка в горах'
+        from printprep.ui.store import prefs
+        store = prefs()
+        for key, value in (('theme', 'dark'), ('language', lang), ('tutorial_done', True)):
+            store.setValue(key, value)
+        store.sync()
+        folder = Path(temp) / ('Mountain trip' if lang == 'en' else 'Съёмка в горах')
         folder.mkdir()
         demo_photos(folder)
+        if lang == 'en':
+            for ru, en in EN_NAMES.items():
+                (folder / ru).rename(folder / en)
         from PySide6.QtWidgets import QApplication
-        from printprep.ui.app import setup
-        from printprep.ui.main_window import MainWindow
+        from printprep.ui import app as appmod
         app = QApplication([])
-        setup(app)
+        appmod.setup(app)
+        from printprep.ui.splash import Splash
+        splash = Splash()
+        splash.phase = 1.2
+        splash.show()
+        app.processEvents()
+        splash.grab().save(str(out / 'splash.png'))
+        splash.close()
+        from printprep.ui.main_window import MainWindow
         window = MainWindow()
         window.resize(1600, 960)
         window.show()
@@ -146,6 +168,28 @@ def main():
         app.processEvents()
         dialog.grab().save(str(out / 'presets.png'))
         dialog.close()
+        window.viewer.set_zoom('fit')
+        window.strip.select_row(0)
+        window.apply_preset('builtin:lab_10x15')
+        window.set_view_mode('split')
+        wait(app, window)
+        window.show_tutorial()
+        window.tour.go(3, animate=False)
+        app.processEvents()
+        window.grab().save(str(out / 'tour.png'))
+        window.tour.finish()
+        # Light theme: the same window rebuilt in place, as the settings dialog does it.
+        store.setValue('theme', 'light')
+        window = appmod.rebuild(window)
+        window.resize(1600, 960)
+        wait(app, window)
+        window.grab().save(str(out / 'interface_light.png'))
+        from printprep.ui.app_settings import AppSettingsDialog
+        settings = AppSettingsDialog(window)
+        settings.show()
+        app.processEvents()
+        settings.grab().save(str(out / 'settings.png'))
+        settings.close()
         window.close()
     print('saved to', out)
 

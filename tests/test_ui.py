@@ -207,3 +207,47 @@ def test_empty_folder_shows_message(desktop_runtime, tmp_path):
 def test_to_qimage_handles_float_and_uint8():
     assert to_qimage(np.zeros((4, 5, 3), np.uint8)).size().width() == 5
     assert to_qimage(np.ones((4, 5, 3), np.float32)).pixelColor(0, 0).red() == 255
+
+
+def test_preferences_are_isolated_from_the_registry():
+    from PySide6.QtCore import QSettings
+    from printprep.ui.store import prefs
+    store = prefs()
+    assert store.format() == QSettings.Format.IniFormat and store.fileName().endswith('.ini')
+
+
+def test_theme_switch_rebuilds_window_and_keeps_folder(desktop_runtime, window):
+    from printprep.ui import app as appmod
+    from printprep.ui.store import prefs
+    window.strip.select_row(1)
+    wait_idle(desktop_runtime, window)
+    folder = window.folder
+    prefs().setValue('theme', 'light')
+    try:
+        fresh = appmod.rebuild(window)
+        wait_idle(desktop_runtime, fresh)
+        assert appmod.T['name'] == 'light'
+        assert fresh is not window and fresh.folder == folder and fresh.current == 1
+        fresh.close()
+    finally:
+        prefs().setValue('theme', 'dark')
+        appmod.apply_appearance(desktop_runtime)
+
+
+def test_tutorial_walks_every_step_once(desktop_runtime, window):
+    from printprep.ui.tutorial import STEPS
+    window.store.setValue('tutorial_done', False)
+    window.show_tutorial()
+    tour = window.tour
+    for i in range(len(STEPS)):
+        assert tour.index == i and tour.card.isVisible()
+        tour.next.click()
+    assert window.tour is None and window.store.value('tutorial_done', False, type=bool)
+
+
+def test_narrow_window_switches_toolbar_to_icons(desktop_runtime, window):
+    window._fit_viewer_bar(600)
+    assert window.bar_compact and window.view_seg.buttons['result'].text() == ''
+    assert not window.nav_prev.isVisible()
+    window._fit_viewer_bar(1200)
+    assert not window.bar_compact and window.view_seg.buttons['result'].text()

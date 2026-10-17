@@ -30,12 +30,12 @@ def package(root):
                     dest = licenses / name / str(file).replace('..', '_')
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     dest.write_bytes(source.read_bytes())
-    for name in ('README.txt', 'THIRD_PARTY.md'):
+    for name in ('README.txt', 'README_EN.txt', 'THIRD_PARTY.md'):
         if (dist / name).exists():
             shutil.copy(dist / name, app / name)
     sums = []
     for path in sorted(app.rglob('*')):
-        if path.is_file() and path.suffix.lower() in ('.exe', '.dll', '.pyd', '.onnx'):
+        if path.is_file() and path.suffix.lower() in ('.exe', '.dll', '.pyd', '.onnx', '.npz'):
             sums.append(f'{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.relative_to(app).as_posix()}')
     (app / 'SHA256SUMS.txt').write_text('\n'.join(sums) + '\n', encoding='ascii')
     archive_path = dist / 'PrintPrep-Windows-x64.zip'

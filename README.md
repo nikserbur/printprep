@@ -1,35 +1,68 @@
-# Print Prep 2.1
+# Print Prep 2.2
 
-Локальное приложение для Windows, которое готовит папку фотографий к печати. **Открыл папку → выбрал пресет → «Подготовить».** Оригиналы не меняются, результат появляется в подпапке `PrintPrep_…`.
+A local Windows app that prepares a whole folder of photos for printing.
+**Open a folder → pick a preset → “Prepare”.** Originals are never changed; the results land in a
+`PrintPrep_…` subfolder next to them. Everything runs offline on your computer.
 
-![Рабочее окно Print Prep](docs/interface.png)
+![Print Prep main window](docs/interface.png)
 
-[Пустое окно](docs/start.png) · [До/после](docs/compare.png) · [Правки снимка](docs/photo.png) · [Кадрирование](docs/crop.png) · [Нейросеть: расчёт](docs/neural_progress.png) · [Нейросеть: результат](docs/neural.png) · [Масштаб 1:1](docs/neural_1to1.png) · [Управление пресетами](docs/presets.png)
+[Light theme](docs/interface_light.png) · [Start screen](docs/start.png) · [Before / after](docs/compare.png) ·
+[Per-photo edits](docs/photo.png) · [Crop](docs/crop.png) · [Neural network at work](docs/neural_progress.png) ·
+[Neural result](docs/neural.png) · [1:1 zoom](docs/neural_1to1.png) · [Preset manager](docs/presets.png) ·
+[App settings](docs/settings.png) · [First-run tour](docs/tour.png) · [Splash](docs/splash.png)
 
-## Что внутри
+The interface speaks **English and Russian** and comes in **dark, light or “as in Windows”** themes.
 
-- **Одно рабочее окно:** слева пресеты, в центре живой просмотр, лента кадров и строка состояния, справа карточка пресета, гистограмма и настройки по разделам. У каждого раздела своя цветная метка.
-- **Просмотр:** три режима — «Результат», «До / после» со шторкой (по умолчанию) и «Исходник». Масштаб «По окну», 1:1 (пиксель файла = пиксель экрана, видна настоящая резкость) и 2:1. Любой ползунок пересчитывает картинку за 0,1–0,2 с.
-- **Пресеты:** клик применяет пресет ко всей папке. В карточке пресета видны его параметры, «Сохранить» появляется при изменениях. Меню «Пресет» содержит: сохранить как, переименовать, дублировать, сбросить, экспорт, импорт, удалить. Есть отдельное окно «Управление пресетами». У каждого пресета в списке есть меню «…».
-- **Правки снимка** во вкладке «Этот снимок» поверх пресета: кадр, поворот, горизонт, свет, цвет, нейросеть. Можно отменить (Ctrl+Z), скопировать на выбранные снимки и перенести в пресет. Правки каждой папки сохраняются автоматически.
-- **Умная авто-коррекция**, переработанная по ресёрчу и проверенная замерами:
-  - баланс белого — голосование нейтральных цветов в лог-хроматической гистограмме, без сдвига от неба и листвы;
-  - экспозиция по запасу светов: намеренно тёмные кадры не высветляются;
-  - авто-уровни по точкам 0,1%, как в авто-контрасте Photoshop;
-  - тени, света, сочность, шумоподавление.
+## What it does
 
-  На испорченных эталонах убирает в среднем 29% ошибки (оттенки 35–40%), хорошие снимки почти не трогает ([замеры](docs/RESEARCH.md)).
-- **Ручной цветокор как в Lightroom** и девять стилей. «Белые» и «Чёрные» стали заметно сильнее.
-- **Нейросеть — одна, Real-ESRGAN.** Восстанавливает детали и чистит JPEG-артефакты. Работает в фоне с прогрессом и оценкой времени. Считается один раз для снимка, правки цвета и сила применяются мгновенно. Результат виден прямо в просмотре. Включается только там, где снимок увеличивается в 1,3× и больше.
-- **Печать:** мм/PPI, пиксели, длинная сторона, оригинал; умный кадр по лицам, поля, безопасная зона; выходная резкость под экран, глянец или мат; компенсация яркости отпечатка; ICC принтера с экранной пробой и подсветкой цветов вне охвата.
-- **Качество:** float32 от начала до конца, 16-битные TIFF/PNG на входе и выходе, точное преобразование Display P3 и Adobe RGB, EXIF без GPS, дизеринг.
-- **Скорость и размер:** параллельный экспорт полосами. Сборка-папка стартует быстрее однофайловой. Из сборки исключены видео-кодеки OpenCV, OpenSSL, лишние модули Qt и программный OpenGL. ZIP 110 → 75 МБ.
+- **One workspace.** Presets on the left, a live preview with a filmstrip in the middle, the preset
+  card, histogram and settings on the right. Every change is visible immediately — there is no
+  “Apply” button. Ctrl+Z / Ctrl+Y undo and redo.
+- **Presets are the main idea.** One click applies a preset to every photo in the folder. The selected
+  preset is outlined, and a banner says plainly that you are editing that preset and the change goes
+  to all photos. Built-in groups collapse; your own presets live in “Mine”. Save, save as, rename,
+  duplicate, export/import files, and a separate preset manager.
+- **Per-photo edits** on top of the preset (“This photo” tab): crop, rotation, straighten, light,
+  colour, neural network. Copy them to selected photos or move them into the preset. Edits are saved
+  per folder automatically.
+- **Smart auto correction**, measured rather than guessed (`tools/eval_auto.py`):
+  - white balance by voting of near-neutral surfaces in log-chroma space, textured surfaces weighted
+    above smooth sky and backdrops; a real cast is corrected almost fully, while warm scene light
+    (sunset, lamps) is kept because it leaves the shadows neutral; detected skin must stay natural;
+  - exposure from the log-average and the highlight headroom, with faces as a second opinion; dark
+    low-key and bright high-key frames are left alone;
+  - auto levels at 0.1 % clipping only when both ends of the histogram are empty; shadows lifted only
+    where they hold detail (a black backdrop stays black); strong veils go to a dark-channel dehaze.
 
-## Сборка и запуск
+  On reference photos with known faults it removes **43 %** of the colour error (casts 32–48 %,
+  underexposure 65 %) and changes good photos by only ΔE 1.9 — see [research notes](docs/RESEARCH.md).
+- **Manual grading like Lightroom** (exposure, contrast, highlights, shadows, whites, blacks,
+  temperature, tint, vibrance, saturation, clarity, dehaze, noise) and nine styles.
+- **One neural network — Real-ESRGAN.** Restores detail and cleans JPEG artefacts when a photo has to
+  be enlarged 1.3× or more. It runs once per photo in the background with progress and time left,
+  and the result shows right in the preview. The best settings are automatic; an “Advanced” dialog
+  offers strength and a *clean ↔ detail* control (Real-ESRGAN’s official denoise interpolation plus
+  returned source texture), so the result no longer looks smeared.
+- **Printing.** mm + PPI, exact pixels, long edge or original size; smart framing on faces, borders,
+  safe zone; output sharpening for screen, gloss or matte; print-brightness compensation; printer
+  ICC profiles with soft proof and gamut warning.
+- **Quality.** float32 throughout, 16-bit TIFF/PNG in and out, exact Display P3 / Adobe RGB
+  conversion, EXIF without GPS, dithering.
+- **Fast on weak PCs.** Previews decode a reduced JPEG (DCT scaling) instead of the full file; the full
+  resolution is read only for 1:1, the neural network and export. Neighbouring photos are prefetched,
+  so switching after viewing takes ~0.03 s; a slider drag redraws in ~0.06 s. Export runs strips in
+  parallel. The build is a folder (fast start, antivirus-friendly), ~75 MB zipped.
+- **Friendly.** An animated splash while the heavy modules load, a short spotlight tour on first run
+  (repeat it from App settings), toolbar that switches to icons in narrow windows.
 
-**Готовая программа для коллег:** на Windows с Python 3.12 x64 запустите `build_exe.bat`. Скрипт прогонит тесты, соберёт папку `PrintPrep` с `PrintPrep.exe`, проверит self-test и упакует `dist/PrintPrep-Windows-x64.zip`. Коллегам нужно распаковать архив и запустить `PrintPrep.exe`. Python им не нужен.
+## Build and run
 
-Запуск из исходников:
+**Ready-made app for colleagues:** on Windows with Python 3.12 x64 run `build_exe.bat`. It runs the
+tests, builds the `PrintPrep` folder with `PrintPrep.exe`, checks the self-test and packs
+`dist/PrintPrep-Windows-x64.zip`. Colleagues unzip it and start `PrintPrep.exe`; they need neither
+Python nor admin rights.
+
+From source:
 
 ```bash
 py -3.12 -m venv .venv
@@ -37,6 +70,16 @@ py -3.12 -m venv .venv
 .venv\Scripts\python print_prep.py
 ```
 
-Подробнее: [инструкция](README.txt), [план 2.0](docs/PLAN.md), [исследование и замеры](docs/RESEARCH.md), [проверка перед выдачей](docs/ACCEPTANCE.md), [сторонние компоненты](THIRD_PARTY.md). Оценка авто-коррекции на своих эталонах: `python tools/eval_auto.py <папка с хорошими JPEG>`.
+Tools: `tools/eval_auto.py <folder of good JPEGs>` — objective check of auto correction;
+`tools/profile_workflow.py` — speed of every step; `tools/screenshot_demo.py` — regenerate the
+screenshots above; `tools/make_icon.py` — the logo.
 
-Ограничения: нет RAW/HEIC и прямой печати на принтер. Рабочее пространство — sRGB, широкий охват мягко сжимается. Вывод в ICC принтера только 8-битный.
+More: [user guide (EN)](README_EN.txt) · [инструкция (RU)](README.txt) · [research and measurements](docs/RESEARCH.md) ·
+[acceptance checklist](docs/ACCEPTANCE.md) · [third-party components](THIRD_PARTY.md) ·
+[bundled models](assets/models/README.md).
+
+Limits: no RAW/HEIC and no direct printing. The working space is sRGB (wide gamut is compressed
+gently). Output to a printer ICC profile is 8-bit only.
+
+The logo is an original abstract composition after Kandinsky’s *Several Circles*: glowing discs that
+read as lenses and paint at once, seen through viewfinder corners.

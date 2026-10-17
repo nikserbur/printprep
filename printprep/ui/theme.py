@@ -8,15 +8,54 @@ colouring the area around the image.
 """
 from PySide6.QtGui import QColor, QFont, QPalette
 
-T = dict(
+DARK = dict(
+    name='dark',
     bg='#111214', panel='#18191c', raised='#202125', hover='#292a2f', press='#313238',
     border='#2a2b30', border_strong='#3a3c43', text='#eeeef1', text2='#aeb1ba', text3='#757984',
     accent='#3d8bfd', accent_hover='#5b9dff', accent_press='#2f78e6', accent_soft='rgba(61,139,253,0.16)',
     accent_text='#ffffff', success='#34c77b', warning='#f5a524', danger='#ff5d5d',
     viewer_dark='#0c0d0f', viewer_gray='#767676', viewer_light='#d6d6d6',
+    track='#3a3c43', track_fill_off='#4a4d55', knob='#f4f5f7', knob_off='#6b6e76', seg_checked='#3a3d45',
+    hist_bg='#0d0e10', skeleton='#1d1e22', disabled='#50535b', primary_off_bg='#2a3a58', primary_off_fg='#8ea3c8',
+    scroll='#3a3c43', scroll_hover='#4b4e57', input_hover='#50535c', drop_active='#1b2333',
+    chip_accent='#8fb6ff', chip_warning='#f5c475', chip_success='#6fdca8', chip_danger='#ff9a9a', chip_neural='#c9b1ff',
+    on_accent_soft='#cfe0ff',
 )
+LIGHT = dict(
+    name='light',
+    bg='#eceef2', panel='#f8f9fb', raised='#ffffff', hover='#eef0f4', press='#e2e5eb',
+    border='#dfe2e8', border_strong='#cbd0d9', text='#15171c', text2='#4a505d', text3='#7b8190',
+    accent='#2f6fe4', accent_hover='#2462d3', accent_press='#1d55bd', accent_soft='rgba(47,111,228,0.12)',
+    accent_text='#ffffff', success='#178a52', warning='#b86e00', danger='#d43c3c',
+    viewer_dark='#16171a', viewer_gray='#767676', viewer_light='#d9dadc',
+    track='#d4d8df', track_fill_off='#b9bec8', knob='#ffffff', knob_off='#c9cdd5', seg_checked='#ffffff',
+    hist_bg='#f2f3f6', skeleton='#dcdfe5', disabled='#a7acb6', primary_off_bg='#b8cdf3', primary_off_fg='#eef3fd',
+    scroll='#c5cad3', scroll_hover='#aab0bb', input_hover='#b3b9c4', drop_active='#e3ecfd',
+    chip_accent='#1f5cc8', chip_warning='#8a5300', chip_success='#11703f', chip_danger='#b52f2f', chip_neural='#6a3fd1',
+    on_accent_soft='#1d4fb0',
+)
+T = dict(DARK)
 ACCENTS = dict(size='#3d8bfd', light='#f5a524', detail='#22c3a6', style='#e45fae', neural='#9b6bff',
                output='#34c77b', photo='#5b9dff', preset='#3d8bfd')
+
+
+def resolve(name):
+    """'system' follows Windows' app colour mode."""
+    if name in ('dark', 'light'):
+        return name
+    try:
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QGuiApplication
+        return 'light' if QGuiApplication.styleHints().colorScheme() == Qt.ColorScheme.Light else 'dark'
+    except Exception:
+        return 'dark'
+
+
+def apply_theme(name):
+    """Switch tokens in place; widgets read them when they are built."""
+    T.clear()
+    T.update(LIGHT if resolve(name) == 'light' else DARK)
+    return T['name']
 RADIUS = 8
 FONT_FAMILY = 'Segoe UI Variable Text'
 
@@ -89,7 +128,7 @@ QPushButton:focus { border-color: %(accent)s; }
 QPushButton#Primary { background: %(accent)s; border: 1px solid %(accent)s; color: #ffffff; font-weight: 600; padding: 7px 18px; }
 QPushButton#Primary:hover { background: %(accent_hover)s; border-color: %(accent_hover)s; }
 QPushButton#Primary:pressed { background: %(accent_press)s; }
-QPushButton#Primary:disabled { background: #2a3a58; border-color: #2a3a58; color: #8ea3c8; }
+QPushButton#Primary:disabled { background: %(primary_off_bg)s; border-color: %(primary_off_bg)s; color: %(primary_off_fg)s; }
 QPushButton#Ghost { background: transparent; border-color: transparent; color: %(text2)s; }
 QPushButton#Ghost:hover { background: %(hover)s; color: %(text)s; }
 QPushButton#Danger { color: %(danger)s; }
@@ -101,14 +140,14 @@ QToolButton { background: transparent; border: 1px solid transparent; border-rad
 QToolButton:hover { background: %(hover)s; color: %(text)s; }
 QToolButton:pressed { background: %(press)s; }
 QToolButton:checked { background: %(accent_soft)s; color: %(accent_hover)s; border-color: transparent; }
-QToolButton:disabled { color: #50535b; }
+QToolButton:disabled { color: %(disabled)s; }
 QToolButton::menu-indicator { image: none; width: 0; }
 
 QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
     background: %(raised)s; border: 1px solid %(border_strong)s; border-radius: 7px;
     padding: 5px 8px; min-height: 20px; color: %(text)s; selection-background-color: %(accent)s;
 }
-QLineEdit:hover, QSpinBox:hover, QDoubleSpinBox:hover, QComboBox:hover { border-color: #50535c; }
+QLineEdit:hover, QSpinBox:hover, QDoubleSpinBox:hover, QComboBox:hover { border-color: %(input_hover)s; }
 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus, QComboBox:on { border-color: %(accent)s; }
 QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled { color: %(text3)s; background: %(panel)s; border-color: %(border)s; }
 QSpinBox, QDoubleSpinBox { padding: 5px 2px 5px 8px; }
@@ -129,7 +168,7 @@ QComboBox QAbstractItemView::item:hover { background: %(hover)s; }
 
 QPushButton#Dropdown { text-align: left; padding: 5px 30px 5px 10px; background: %(raised)s; border: 1px solid %(border_strong)s;
     border-radius: 7px; font-weight: 400; min-height: 20px; }
-QPushButton#Dropdown:hover { border-color: #50535c; background: %(hover)s; }
+QPushButton#Dropdown:hover { border-color: %(input_hover)s; background: %(hover)s; }
 QPushButton#Dropdown:focus { border-color: %(accent)s; }
 QMenu { background: %(raised)s; border: 1px solid %(border_strong)s; border-radius: 10px; padding: 5px; }
 QMenu::item { padding: 7px 28px 7px 30px; border-radius: 6px; color: %(text)s; }
@@ -145,11 +184,11 @@ QToolTip { background: %(raised)s; color: %(text)s; border: 1px solid %(border_s
 
 QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; border: none; }
 QScrollBar:vertical { background: transparent; width: 10px; margin: 2px; }
-QScrollBar::handle:vertical { background: #3a3c43; border-radius: 3px; min-height: 36px; margin: 0 2px; }
-QScrollBar::handle:vertical:hover { background: #4b4e57; }
+QScrollBar::handle:vertical { background: %(scroll)s; border-radius: 3px; min-height: 36px; margin: 0 2px; }
+QScrollBar::handle:vertical:hover { background: %(scroll_hover)s; }
 QScrollBar:horizontal { background: transparent; height: 10px; margin: 2px; }
-QScrollBar::handle:horizontal { background: #3a3c43; border-radius: 3px; min-width: 36px; margin: 2px 0; }
-QScrollBar::handle:horizontal:hover { background: #4b4e57; }
+QScrollBar::handle:horizontal { background: %(scroll)s; border-radius: 3px; min-width: 36px; margin: 2px 0; }
+QScrollBar::handle:horizontal:hover { background: %(scroll_hover)s; }
 QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; border: none; background: none; }
 QScrollBar::add-page, QScrollBar::sub-page { background: none; }
 

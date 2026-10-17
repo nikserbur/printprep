@@ -18,3 +18,6 @@ of all Qt build configurations or external printer profiles.
   https://github.com/xinntao/Real-ESRGAN/blob/master/LICENSE (downloaded 2026-10-16)
 - YuNet-MIT.txt:
   https://huggingface.co/opencv/face_detection_yunet/blob/main/LICENSE (downloaded 2026-10-16)
+- Real-ESRGAN general wdn x4v3 weights (`assets/models/realesr-general-wdn-x4v3.npz`):
+  https://github.com/xinntao/Real-ESRGAN/releases/tag/v0.2.5.0 (downloaded 2026-10-17), same
+  BSD-3-Clause license as above.

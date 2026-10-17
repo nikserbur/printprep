@@ -37,11 +37,8 @@ def desktop_runtime(tmp_path_factory):
 def isolated_preferences(tmp_path, monkeypatch):
     """Every test gets its own QSettings store and app-data folder."""
     from PySide6.QtCore import QSettings, QStandardPaths
-    import printprep.ui.main_window as mw
-    import printprep.ui.inspector as insp
-    ini = tmp_path / 'settings.ini'
-    monkeypatch.setattr(mw, 'QSettings', lambda *a: QSettings(str(ini.with_name(f'{"_".join(a) or "x"}.ini')), QSettings.Format.IniFormat))
-    monkeypatch.setattr(insp, 'QSettings', lambda *a: QSettings(str(ini), QSettings.Format.IniFormat))
+    # ui.store.prefs() follows the default format and path, so this redirects every store.
+    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path / 'prefs'))
     monkeypatch.setattr(QStandardPaths, 'writableLocation', staticmethod(lambda *_: str(tmp_path / 'appdata')))
 
 

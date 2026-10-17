@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (QAbstractButton, QButtonGroup, QFrame, QHBoxLayou
 
 from . import icons
 from .theme import T, color
+from ..i18n import tr
 
 
 def label(text='', name=None, wrap=False):
@@ -87,7 +88,7 @@ class ParamSlider(QWidget):
         self.editor.setFixedWidth(64)
         self.editor.hide()
         self.editor.editingFinished.connect(self._commit_editor)
-        self.setToolTip(f'{title}\nДвойной щелчок — сбросить · стрелки — точная настройка')
+        self.setToolTip(tr('{title}\nДвойной щелчок — сбросить · стрелки — точная настройка', title=title))
 
     def sizeHint(self):
         return QSize(260, 44)
@@ -148,12 +149,12 @@ class ParamSlider(QWidget):
             if not enabled:
                 p.fillPath(path, QColor(0, 0, 0, 140))
         else:
-            p.fillPath(path, QColor('#3a3c43'))
+            p.fillPath(path, QColor(T['track']))
             zero = min(self.high, max(self.low, 0.0))
             x0, x1 = sorted((self._x(zero), self._x(self._value)))
             fill = QPainterPath()
             fill.addRoundedRect(QRectF(x0, t.top(), max(0., x1 - x0), t.height()), 2, 2)
-            p.fillPath(fill, QColor(T['accent'] if enabled else '#4a4d55'))
+            p.fillPath(fill, QColor(T['accent'] if enabled else T['track_fill_off']))
         if self.baseline is not None:
             bx = self._x(self.baseline)
             p.setPen(QPen(QColor(T['text3']), 2))
@@ -161,7 +162,9 @@ class ParamSlider(QWidget):
         x = self._x(self._value)
         r = 7 if (self._hover or self._drag or self.hasFocus()) else 6
         p.setPen(QPen(QColor(T['accent'] if self.hasFocus() else '#00000000'), 2))
-        p.setBrush(QColor('#f4f5f7' if enabled else '#6b6e76'))
+        p.setBrush(QColor(T['knob'] if enabled else T['knob_off']))
+        if T['name'] == 'light':
+            p.setPen(QPen(QColor(T['accent'] if self.hasFocus() else T['border_strong']), 1.5 if not self.hasFocus() else 2))
         p.drawEllipse(QPointF(x, t.center().y()), r, r)
 
     def mousePressEvent(self, e):
@@ -302,8 +305,8 @@ class Switch(QAbstractButton):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = 34, 20
         track = QRectF(self.width() - w - 4, (self.height() - h) / 2, w, h)
-        on = QColor(T['accent']) if self.isEnabled() else QColor('#2a3a58')
-        off = QColor('#3a3c43')
+        on = QColor(T['accent']) if self.isEnabled() else QColor(T['primary_off_bg'])
+        off = QColor(T['track'])
         mix = QColor(
             round(off.red() + (on.red() - off.red()) * self._pos),
             round(off.green() + (on.green() - off.green()) * self._pos),
@@ -311,7 +314,7 @@ class Switch(QAbstractButton):
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(mix)
         p.drawRoundedRect(track, h / 2, h / 2)
-        p.setBrush(QColor('#ffffff' if self.isEnabled() else '#8a8d95'))
+        p.setBrush(QColor('#ffffff' if self.isEnabled() else T['knob_off']))
         x = track.left() + 3 + self._pos * (w - h)
         p.drawEllipse(QRectF(x, track.top() + 3, h - 6, h - 6))
         if self.text():
@@ -336,8 +339,8 @@ class Segmented(QFrame):
             #Segmented QPushButton {{ background: transparent; border: none; border-radius: 6px; padding: {pad};
                                      color: {T["text2"]}; min-height: 18px; font-weight: 500; }}
             #Segmented QPushButton:hover {{ color: {T["text"]}; background: {T["hover"]}; }}
-            #Segmented QPushButton:checked {{ background: #3a3d45; color: {T["text"]}; }}
-            #Segmented QPushButton:disabled {{ color: #50535b; }}
+            #Segmented QPushButton:checked {{ background: {T["seg_checked"]}; color: {T["text"]}; border: 1px solid {T["border"] if T["name"] == "light" else T["seg_checked"]}; }}
+            #Segmented QPushButton:disabled {{ color: {T["disabled"]}; }}
         ''')
         row = QHBoxLayout(self)
         row.setContentsMargins(2, 2, 2, 2)
@@ -482,11 +485,11 @@ class Dropdown(QPushButton):
     """Select-like button that opens a styled menu. Menus are always placed on screen."""
     changed = Signal(object)
 
-    def __init__(self, items=(), parent=None, placeholder='Выберите…'):
+    def __init__(self, items=(), parent=None, placeholder=None):
         super().__init__(parent)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setObjectName('Dropdown')
-        self.placeholder = placeholder
+        self.placeholder = placeholder or tr('Выберите…')
         self.items = []
         self._value = None
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -527,7 +530,7 @@ class Dropdown(QPushButton):
     def paintEvent(self, e):
         super().paintEvent(e)
         p = QPainter(self)
-        pm = icons.pixmap('chevron_down', T['text2'] if self.isEnabled() else '#50535b', 12)
+        pm = icons.pixmap('chevron_down', T['text2'] if self.isEnabled() else T['disabled'], 12)
         p.drawPixmap(self.width() - 24, (self.height() - 12) // 2, pm)
 
     def _open(self):
@@ -571,7 +574,7 @@ class Histogram(QWidget):
         super().__init__(parent)
         self.setFixedHeight(96)
         self.data = None
-        self.setToolTip('Гистограмма результата. Треугольники загораются, если тени или света обрезаются.')
+        self.setToolTip(tr('Гистограмма результата. Треугольники загораются, если тени или света обрезаются.'))
 
     def set_data(self, data):
         self.data = data
@@ -583,22 +586,23 @@ class Histogram(QWidget):
         r = QRectF(self.rect()).adjusted(.5, .5, -.5, -.5)
         path = QPainterPath()
         path.addRoundedRect(r, 8, 8)
-        p.fillPath(path, QColor('#0d0e10'))
+        p.fillPath(path, QColor(T['hist_bg']))
         p.setPen(QPen(QColor(T['border']), 1))
         p.drawPath(path)
         p.setClipPath(path)
-        p.setPen(QPen(QColor(255, 255, 255, 14), 1))
+        p.setPen(QPen(QColor(255, 255, 255, 14) if T['name'] == 'dark' else QColor(0, 0, 0, 18), 1))
         for i in (1, 2, 3):
             x = r.left() + r.width() * i / 4
             p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()))
         if not self.data:
             p.setPen(QColor(T['text3']))
-            p.drawText(r, Qt.AlignmentFlag.AlignCenter, 'Гистограмма появится с первым снимком')
+            p.drawText(r, Qt.AlignmentFlag.AlignCenter, tr('Гистограмма появится с первым снимком'))
             return
         chans = self.data['channels']
         peak = max(1e-6, max(float(np.percentile(c[2:-2], 99.5)) for c in chans[:3]) * 1.15)
         colors = (QColor(255, 80, 80, 110), QColor(80, 220, 120, 110), QColor(90, 140, 255, 120))
-        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus if T['name'] == 'dark'
+                             else QPainter.CompositionMode.CompositionMode_Multiply)
         for c, color_ in zip(chans[:3], colors):
             poly = QPainterPath()
             poly.moveTo(r.left(), r.bottom())
@@ -612,7 +616,7 @@ class Histogram(QWidget):
         for i in range(256):
             pt = QPointF(r.left() + r.width() * i / 255, r.bottom() - min(1., lum[i] / peak) * (r.height() - 6))
             line.moveTo(pt) if i == 0 else line.lineTo(pt)
-        p.setPen(QPen(QColor(255, 255, 255, 120), 1.2))
+        p.setPen(QPen(QColor(255, 255, 255, 120) if T['name'] == 'dark' else QColor(0, 0, 0, 110), 1.2))
         p.drawPath(line)
         for left, value in ((True, self.data['low']), (False, self.data['high'])):
             on = value > .005
@@ -622,24 +626,26 @@ class Histogram(QWidget):
             tri.lineTo(x + (8 if left else -8), r.top() + 6)
             tri.lineTo(x, r.top() + 14)
             tri.closeSubpath()
-            p.fillPath(tri, QColor('#5b9dff' if left and on else '#ff5d5d' if on else '#3a3c43'))
+            p.fillPath(tri, QColor('#5b9dff' if left and on else '#ff5d5d' if on else T['track']))
 # ---------------------------------------------------------------- chips
 class Chip(QLabel):
-    STYLES = {
-        'neutral': (T['raised'], T['text2'], T['border_strong']),
-        'accent': ('rgba(61,139,253,0.15)', '#8fb6ff', 'rgba(61,139,253,0.35)'),
-        'warning': ('rgba(242,177,74,0.14)', '#f5c475', 'rgba(242,177,74,0.35)'),
-        'success': ('rgba(60,207,138,0.14)', '#6fdca8', 'rgba(60,207,138,0.35)'),
-        'danger': ('rgba(255,93,93,0.14)', '#ff9a9a', 'rgba(255,93,93,0.35)'),
-        'neural': ('rgba(155,107,255,0.16)', '#c9b1ff', 'rgba(155,107,255,0.4)'),
-    }
+    @staticmethod
+    def styles():
+        return {
+            'neutral': (T['raised'], T['text2'], T['border_strong']),
+            'accent': ('rgba(61,139,253,0.14)', T['chip_accent'], 'rgba(61,139,253,0.38)'),
+            'warning': ('rgba(245,165,36,0.14)', T['chip_warning'], 'rgba(245,165,36,0.4)'),
+            'success': ('rgba(52,199,123,0.14)', T['chip_success'], 'rgba(52,199,123,0.4)'),
+            'danger': ('rgba(255,93,93,0.14)', T['chip_danger'], 'rgba(255,93,93,0.4)'),
+            'neural': ('rgba(155,107,255,0.16)', T['chip_neural'], 'rgba(155,107,255,0.42)'),
+        }
 
     def __init__(self, text='', kind='neutral', parent=None):
         super().__init__(text, parent)
         self.set_kind(kind)
 
     def set_kind(self, kind):
-        bg, fg, border = self.STYLES[kind]
+        bg, fg, border = self.styles()[kind]
         self.setStyleSheet(f'QLabel {{ background: {bg}; color: {fg}; border: 1px solid {border}; border-radius: 10px;'
                            f' padding: 2px 9px; font-size: 12px; }}')
 
@@ -671,13 +677,14 @@ class FlowRow(QWidget):
             w.setParent(None)
             w.deleteLater()
         self.items = []
+        self.setMinimumHeight(0)
         self.updateGeometry()
 
     def add(self, widget):
         widget.setParent(self)
         widget.show()
         self.items.append(widget)
-        self._layout(self.width())
+        self._sync_height()
         self.updateGeometry()
 
     def _layout(self, width, apply=True):
@@ -694,7 +701,12 @@ class FlowRow(QWidget):
         return y + line
 
     def resizeEvent(self, e):
-        self._layout(e.size().width())
+        self._sync_height(e.size().width())
+
+    def _sync_height(self, width=None):
+        height = self._layout(width or self.width())
+        if self.minimumHeight() != height:
+            self.setMinimumHeight(height)   # layouts ignore heightForWidth here: keep rows from overlapping
 
     def hasHeightForWidth(self):
         return True
@@ -763,7 +775,7 @@ class Toast(QFrame):
         self.actions = QHBoxLayout()
         self.actions.setSpacing(6)
         row.addLayout(self.actions)
-        close = tool('close', 'Закрыть', self.hide, size=16)
+        close = tool('close', tr('Закрыть'), self.hide, size=16)
         row.addWidget(close)
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)

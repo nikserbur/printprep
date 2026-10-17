@@ -4,12 +4,13 @@ Signals are emitted from worker threads; Qt queues them to the GUI thread.
 """
 from __future__ import annotations
 
+import json
 import threading
 import time
 import traceback
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 
 import numpy as np
 from PySide6.QtCore import QObject, Signal
@@ -20,6 +21,7 @@ from ..model import Edit, Settings
 from ..neural import Cancelled
 from ..pipeline import (AnalysisCache, Source, assess, enhance_key, enhanced, needs_analysis, neural_status, plan,
                         render_fast, soft_proof)
+from ..i18n import tr
 
 
 def to_qimage(array):
@@ -159,6 +161,8 @@ class RenderService(QObject):
         self.cache = analysis_cache
         self.neural = neural_worker
         self.sources = OrderedDict()
+        self.previews = OrderedDict()       # finished previews: switching back is instant
+        self.prefetch_jobs = []
         self.cond = threading.Condition()
         self.pending = None
         self.latest = 0
@@ -173,10 +177,17 @@ class RenderService(QObject):
             self.latest = req.gen
             self.cond.notify()
 
+    def prefetch(self, requests):
+        """Prepare neighbouring photos while idle (decode, analysis, fit preview)."""
+        with self.cond:
+            self.prefetch_jobs = list(requests)
+            self.cond.notify()
+
     def stop(self):
         with self.cond:
             self.running = False
             self.pending = None
+            self.prefetch_jobs = []
             self.latest += 1
             self.cond.notify()
         self.thread.join(timeout=5)
@@ -189,6 +200,7 @@ class RenderService(QObject):
         with self.cond:
             if path is None:
                 self.sources.clear()
+                self.previews.clear()
             else:
                 for key in [k for k in self.sources if k[0] == path]:
                     self.sources.pop(key, None)
@@ -197,57 +209,90 @@ class RenderService(QObject):
         from ..neural import release
         while True:
             with self.cond:
-                while self.running and self.pending is None:
+                while self.running and self.pending is None and not self.prefetch_jobs:
                     self.cond.wait()
                 if not self.running:
                     break
-                req, self.pending = self.pending, None
-                self.busy = True
+                prefetch = self.pending is None
+                req = self.prefetch_jobs.pop(0) if prefetch else self.pending
+                if not prefetch:
+                    self.pending = None
+                self.busy = not prefetch
             try:
-                self._process(req)
-            except Cancelled:
+                if prefetch:
+                    self._build(req, quiet=True)
+                else:
+                    result = self._build(req)
+                    if result is not None:
+                        self.ready.emit(result)
+            except (Cancelled, InterruptedError):
                 pass
             except Exception as e:
                 traceback.print_exc()
-                self.failed.emit(req.gen, str(e) or e.__class__.__name__)
+                if not prefetch:
+                    self.failed.emit(req.gen, str(e) or e.__class__.__name__)
             finally:
                 with self.cond:
                     self.busy = False
         release()
 
-    def _stale(self, req):
+    def _stale(self, req, quiet=False):
+        if quiet:
+            return self.pending is not None or not self.running    # user activity wins over prefetch
         return req.gen != self.latest or not self.running
 
-    def _source(self, req):
+    def _source(self, req, quiet=False):
         key = req.info.key
         with self.cond:
             source = self.sources.get(key)
             if source is not None:
                 self.sources.move_to_end(key)
                 return source
-        self.status.emit(req.gen, 'Загружаем снимок…', None)
+        if not quiet:
+            self.status.emit(req.gen, tr('Загружаем снимок…'), None)
         source = Source.open(req.info, self.cache)
         with self.cond:
             self.sources[key] = source
-            while len(self.sources) > 3:
+            while len(self.sources) > 5:
                 self.sources.popitem(last=False)
         return source
 
-    def _process(self, req: PreviewRequest):
+    def _preview_key(self, req):
+        from ..neural import CACHE, denoise_level
+        e = req.edit or Edit()
+        enhanced_ready = CACHE.get(req.info.key + (e.rotation % 360, round(e.angle, 3),
+                                                   denoise_level(req.settings.neural_detail))) is not None
+        return (req.info.key, json.dumps(asdict(req.settings), sort_keys=True), json.dumps(asdict(e), sort_keys=True),
+                req.mode, req.target, req.region, req.compare, req.proof, req.gamut, enhanced_ready)
+
+    def _build(self, req: PreviewRequest, quiet=False):
         started = time.perf_counter()
-        if self._stale(req):
-            return
-        source = self._source(req)
-        if self._stale(req):
-            return
+        if self._stale(req, quiet):
+            return None
+        key = self._preview_key(req) if req.mode != 'crop' else None
+        with self.cond:
+            cached = self.previews.get(key) if key else None
+            if cached is not None:
+                self.previews.move_to_end(key)
+        if cached is not None:
+            if quiet:
+                return None
+            if cached.neural == 'pending':
+                source = self._source(req)
+                self.neural.ensure(source, req.settings, req.edit)
+            return replace(cached, gen=req.gen, seconds=time.perf_counter() - started)
+        source = self._source(req, quiet)
+        if self._stale(req, quiet):
+            return None
         settings, edit = req.settings, req.edit
         if source.analysis is None and needs_analysis(settings, edit):
-            self.status.emit(req.gen, 'Анализ снимка: свет, цвет, лица…', None)
+            if not quiet:
+                self.status.emit(req.gen, tr('Анализ снимка: свет, цвет, лица…'), None)
             source.ensure_analysis(self.cache)
-        if source.analysis is not None:
+        if source.analysis is not None and not quiet:
             self.analyzed.emit(str(req.info.path), source.analysis)
-        if self._stale(req):
-            return
+        if self._stale(req, quiet):
+            return None
         geom = plan(source, settings, edit, self.cache)
         if req.mode == 'crop':
             import cv2
@@ -256,41 +301,46 @@ class RenderService(QObject):
             k = min(1, req.target / max(h, w))
             small = cv2.resize(base, (max(1, round(w * k)), max(1, round(h * k))), interpolation=cv2.INTER_AREA)
             image = to_qimage((small >> 8).astype(np.uint8) if small.dtype == np.uint16 else small)
-            self.ready.emit(PreviewResult(req.gen, 'crop', image, None, geom.canvas, k, None, geom, [],
-                                          source.analysis, time.perf_counter() - started, str(req.info.path)))
-            return
+            return PreviewResult(req.gen, 'crop', image, None, geom.canvas, k, None, geom, [],
+                                 source.analysis, time.perf_counter() - started, str(req.info.path))
         applies, reason = neural_status(source, settings, edit, geom)
         entry = enhanced(source, settings, edit, compute=False) if applies else None
         state = 'ready' if entry is not None else 'pending' if applies else ('not_needed' if reason else 'off')
-        if state == 'pending':
+        if state == 'pending' and not quiet:
             self.neural.ensure(source, settings, edit)
         cw, ch = geom.canvas
         if req.mode == 'roi':
             k, use_full, region = 1.0, True, req.region
-            self.status.emit(req.gen, 'Рендер 1:1 в полном разрешении…', None)
+            if not quiet and not source.has_full():
+                self.status.emit(req.gen, tr('Открываем полное разрешение…'), None)
         else:
             k, use_full, region = min(1., req.target / max(cw, ch)), False, None
         result = render_fast(source, settings, edit, k=k, region=region, use_full=use_full,
                              enhanced_source=entry, analysis_cache=self.cache)
-        if self._stale(req):
-            return
+        if self._stale(req, quiet):
+            return None
         display = np.round(np.clip(result.image, 0, 1) * 255).astype(np.uint8)
         if req.proof and settings.output_space == 'ICC' and settings.icc_path:
             try:
                 display = soft_proof(display, settings, req.gamut)
             except Exception as e:
-                result.notes.append(f'ICC-проба недоступна: {e}')
+                result.notes.append(tr('ICC-проба недоступна: {e}', e=e))
         before = None
         if req.compare:
             plain = render_fast(source, settings, edit, k=k, region=region, use_full=use_full, before=True,
                                 analysis_cache=self.cache)
             before = to_qimage(plain.image)
-        if self._stale(req):
-            return
+        if self._stale(req, quiet):
+            return None
         notes = list(dict.fromkeys(source.notes + result.notes + ([reason] if reason else [])))
-        self.ready.emit(PreviewResult(req.gen, req.mode, to_qimage(display), before, geom.canvas, k, region, geom,
-                                      notes, source.analysis, time.perf_counter() - started, str(req.info.path),
-                                      state, reason, histogram(display) if req.mode == 'fit' else None))
+        out = PreviewResult(req.gen, req.mode, to_qimage(display), before, geom.canvas, k, region, geom,
+                            notes, source.analysis, time.perf_counter() - started, str(req.info.path),
+                            state, reason, histogram(display) if req.mode == 'fit' else None)
+        with self.cond:
+            self.previews[key] = out
+            while len(self.previews) > 10:
+                self.previews.popitem(last=False)
+        return out
 
 
 class ThumbnailLoader(QObject):

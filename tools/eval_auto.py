@@ -5,7 +5,7 @@ contrast, haze); the auto correction is applied at 100 % and the colour differen
 the reference is measured (mean ΔE in Oklab ×100, ≈ ΔE00 scale). A good auto shrinks
 the error a lot and barely touches the references themselves ("do no harm").
 
-Usage: python tools/eval_auto.py <folder with good JPEGs> [more folders...]
+Usage: python tools/eval_auto.py [--only=wb,light,color] <folder with good JPEGs> [more folders...]
 """
 import sys
 import tempfile
@@ -51,37 +51,44 @@ def auto_render(path, strength=100):
     return render(src, s, Edit()).image
 
 
+def evaluate(ref, groups=None):
+    """Harm on the reference and (ΔE before, ΔE after) for every degradation of it."""
+    GROUPS.update(groups or {})
+    out = {'name': f'{ref.parent.name}/{ref.name}'}
+    with tempfile.TemporaryDirectory() as temp:
+        img = Image.open(ref).convert('RGB')
+        img.thumbnail((1200, 1200))
+        ref_enc = np.asarray(img).astype(np.float32) / 255
+        path = Path(temp) / 'ref.png'
+        img.save(path)
+        out['harm'] = delta_e(auto_render(path), ref_enc)
+        for name, fault in DEGRADATIONS.items():
+            bad = np.clip(encode(np.clip(fault(decode(ref_enc)), 0, 1)), 0, 1)
+            bad_path = Path(temp) / 'bad.png'
+            Image.fromarray(np.round(bad * 255).astype(np.uint8)).save(bad_path)
+            out[name] = (delta_e(bad, ref_enc), delta_e(auto_render(bad_path), ref_enc))
+    return out
+
+
 def main(folders):
+    from concurrent.futures import ProcessPoolExecutor
     refs = [p for f in folders for p in sorted(Path(f).glob('*.jpg'))]
     if not refs:
         raise SystemExit('Нет JPEG-эталонов')
-    rows = {name: [] for name in DEGRADATIONS}
-    harm = []
-    with tempfile.TemporaryDirectory() as temp:
-        for ref in refs:
-            img = Image.open(ref).convert('RGB')
-            img.thumbnail((1200, 1200))
-            ref_enc = np.asarray(img).astype(np.float32) / 255
-            path = Path(temp) / 'ref.png'
-            img.save(path)
-            harm.append(delta_e(auto_render(path), ref_enc))
-            for name, fault in DEGRADATIONS.items():
-                bad = np.clip(encode(np.clip(fault(decode(ref_enc)), 0, 1)), 0, 1)
-                bad_path = Path(temp) / 'bad.png'
-                Image.fromarray(np.round(bad * 255).astype(np.uint8)).save(bad_path)
-                fixed = auto_render(bad_path)
-                rows[name].append((delta_e(bad, ref_enc), delta_e(fixed, ref_enc)))
+    with ProcessPoolExecutor(min(8, len(refs))) as pool:
+        rows = list(pool.map(evaluate, refs, [dict(GROUPS)] * len(refs)))
     print(f'Эталонов: {len(refs)}')
     print(f'{"Дефект":24s} {"ΔE до":>8s} {"ΔE после":>9s} {"улучшение":>10s}')
     total_before = total_after = 0
-    for name, values in rows.items():
-        before = np.mean([v[0] for v in values])
-        after = np.mean([v[1] for v in values])
+    for name in DEGRADATIONS:
+        before = np.mean([r[name][0] for r in rows])
+        after = np.mean([r[name][1] for r in rows])
         total_before += before
         total_after += after
         print(f'{name:24s} {before:8.2f} {after:9.2f} {100 * (1 - after / before):9.0f}%')
-    print(f'{"ИТОГО":24s} {total_before / len(rows):8.2f} {total_after / len(rows):9.2f} '
+    print(f'{"ИТОГО":24s} {total_before / len(DEGRADATIONS):8.2f} {total_after / len(DEGRADATIONS):9.2f} '
           f'{100 * (1 - total_after / total_before):9.0f}%')
+    harm = [r['harm'] for r in rows]
     print(f'Изменение хороших снимков (ΔE, меньше — лучше): {np.mean(harm):.2f} (макс {np.max(harm):.2f})')
 
 

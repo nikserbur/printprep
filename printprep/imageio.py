@@ -20,6 +20,7 @@ from PIL import Image, ImageCms, ImageOps
 
 from .color import IccSource
 from .model import MAX_PIXELS
+from .i18n import tr
 
 SUPPORTED = {'.jpg', '.jpeg', '.jpe', '.png', '.tif', '.tiff', '.webp', '.bmp'}
 SRGB_PROFILE = ImageCms.ImageCmsProfile(ImageCms.createProfile('sRGB'))
@@ -58,9 +59,9 @@ def inspect(path: Path) -> PhotoInfo:
         warnings.simplefilter('error', Image.DecompressionBombWarning)
         with Image.open(path) as im:
             if im.width * im.height > MAX_PIXELS:
-                raise ValueError('Снимок больше 100 мегапикселей.')
+                raise ValueError(tr('Снимок больше 100 мегапикселей.'))
             if getattr(im, 'n_frames', 1) > 1 and im.format not in ('TIFF', 'JPEG', 'MPO'):
-                raise ValueError('Анимированный файл: сохраните отдельный кадр.')
+                raise ValueError(tr('Анимированный файл: сохраните отдельный кадр.'))
             bits = 8
             if im.format == 'TIFF':
                 value = im.tag_v2.get(258, (8,))
@@ -70,7 +71,7 @@ def inspect(path: Path) -> PhotoInfo:
             if im.mode in ('I;16', 'I;16B', 'I;16L', 'I'):
                 bits = 16
             if bits > 16 or im.mode == 'F':
-                raise ValueError('32-битные файлы не поддерживаются: сохраните 16- или 8-битную копию.')
+                raise ValueError(tr('32-битные файлы не поддерживаются: сохраните 16- или 8-битную копию.'))
             size = im.size
             if im.getexif().get(274, 1) in (5, 6, 7, 8):
                 size = size[::-1]
@@ -80,10 +81,10 @@ def inspect(path: Path) -> PhotoInfo:
                 parsed = IccSource(icc)
                 profile = parsed.description or ImageCms.getProfileDescription(ImageCms.ImageCmsProfile(io.BytesIO(icc))).strip()
             elif im.mode in ('CMYK', 'LAB'):
-                raise ValueError('CMYK/Lab без ICC-профиля: цвет нельзя преобразовать корректно.')
+                raise ValueError(tr('CMYK/Lab без ICC-профиля: цвет нельзя преобразовать корректно.'))
             else:
-                profile = 'Без профиля → sRGB'
-                notes.append('Нет ICC-профиля: считаем, что это sRGB.')
+                profile = tr('Без профиля → sRGB')
+                notes.append(tr('Нет ICC-профиля: считаем, что это sRGB.'))
     return PhotoInfo(path, size, bits, profile, stat.st_size, stat.st_mtime_ns, notes)
 
 
@@ -102,8 +103,12 @@ def _flatten_alpha(rgb, alpha, depth):
     return np.round(out).astype(rgb.dtype)
 
 
-def load(path: Path):
-    """Full-resolution sRGB-encoded array (uint8 or uint16, HxWx3) and notes."""
+def load(path: Path, max_edge=None):
+    """sRGB-encoded array (uint8 or uint16, HxWx3) and notes.
+
+    With `max_edge`, JPEGs are decoded at a reduced DCT scale that is still at least that
+    large (several times faster than a full decode); the caller resizes the rest.
+    """
     import cv2
     notes = []
     with Image.open(path) as im:
@@ -113,6 +118,9 @@ def load(path: Path):
         high = mode in ('I;16', 'I;16B', 'I;16L', 'I') or (im.format == 'TIFF' and max(_tuple(im.tag_v2.get(258, (8,)))) > 8) \
             or (im.format == 'PNG' and _png_bits(path) > 8)
         if not high:
+            if max_edge and im.format == 'JPEG' and max(im.size) > max_edge:
+                k = max_edge / max(im.size)
+                im.draft(im.mode, (max(1, int(im.size[0] * k)), max(1, int(im.size[1] * k))))
             im.load()
             if im.mode == 'P':
                 im = im.convert('RGBA')
@@ -128,14 +136,14 @@ def load(path: Path):
                 im = ImageCms.profileToProfile(base, src, SRGB_PROFILE, outputMode='RGB', renderingIntent=1,
                                                flags=ImageCms.Flags.BLACKPOINTCOMPENSATION)
                 icc = None
-                notes.append('Цвет преобразован из встроенного профиля (LittleCMS).')
+                notes.append(tr('Цвет преобразован из встроенного профиля (LittleCMS).'))
             array = np.asarray(im.convert('RGB'))
             if alpha is not None:
                 array = _flatten_alpha(array, alpha, 255)
         else:
             raw = cv2.imdecode(np.fromfile(str(path), dtype=np.uint8), cv2.IMREAD_UNCHANGED)
             if raw is None:
-                raise ValueError('OpenCV не смог прочитать 16-битный файл.')
+                raise ValueError(tr('OpenCV не смог прочитать 16-битный файл.'))
             if raw.dtype != np.uint16:
                 raw = raw.astype(np.uint16) * 257 if raw.dtype == np.uint8 else np.clip(raw, 0, 65535).astype(np.uint16)
             if raw.ndim == 2:
@@ -150,11 +158,11 @@ def load(path: Path):
         parsed = IccSource(icc)
         if parsed.matrix is not None and not parsed.is_srgb:
             array = parsed.to_srgb_encoded(array)
-            notes.append(f'Цвет преобразован: {parsed.description or "профиль"} → sRGB.')
+            notes.append(tr('Цвет преобразован: {v} → sRGB.', v=parsed.description or tr('профиль')))
         elif parsed.matrix is None and high:
-            notes.append('Профиль 16-битного файла не поддерживается: цвет считается sRGB.')
+            notes.append(tr('Профиль 16-битного файла не поддерживается: цвет считается sRGB.'))
     if array.shape[0] * array.shape[1] > MAX_PIXELS:
-        raise ValueError('Снимок больше 100 мегапикселей.')
+        raise ValueError(tr('Снимок больше 100 мегапикселей.'))
     return np.ascontiguousarray(array), notes
 
 
@@ -242,7 +250,7 @@ def _png16(array, dpi, icc):
     import cv2
     ok, encoded = cv2.imencode('.png', np.ascontiguousarray(array[..., ::-1]), [cv2.IMWRITE_PNG_COMPRESSION, 6])
     if not ok:
-        raise ValueError('Не удалось закодировать PNG.')
+        raise ValueError(tr('Не удалось закодировать PNG.'))
     data = encoded.tobytes()
     ihdr_end = 8 + 25
     extra = _chunk(b'pHYs', struct.pack('>IIB', round(dpi / .0254), round(dpi / .0254), 1))

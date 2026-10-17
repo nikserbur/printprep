@@ -11,8 +11,96 @@ from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QSizePol
 from . import icons
 from .controls import button, label
 from .theme import T
+from ..i18n import tr
 
-BACKGROUNDS = {'dark': T['viewer_dark'], 'gray': T['viewer_gray'], 'light': T['viewer_light']}
+
+def background(name):
+    return T.get(f'viewer_{name}', T['viewer_dark'])
+
+
+class FolderArt(QWidget):
+    """A folder with photos peeking out and bobbing; they jump up while a folder is dragged over."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(150, 96)
+        self.t = 0.
+        self.lift = 0.
+        self.active = False
+        from .app_settings import animations_on
+        self.animated = animations_on()
+        self.timer = QTimer(self)
+        self.timer.setInterval(33)
+        self.timer.timeout.connect(self._tick)
+
+    def showEvent(self, e):
+        if self.animated:
+            self.timer.start()
+
+    def hideEvent(self, e):
+        self.timer.stop()
+
+    def set_active(self, on):
+        self.active = on
+        if not self.animated:
+            self.lift = 1. if on else 0.
+            self.update()
+
+    def _tick(self):
+        self.t += .033
+        self.lift += ((1. if self.active else 0.) - self.lift) * .18
+        self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        accent = QColor(T['accent'])
+        back = QColor(accent)
+        back.setAlpha(150)
+        # Folder back with tab.
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(w / 2 - 52, 22, 104, 66), 9, 9)
+        path.addRoundedRect(QRectF(w / 2 - 52, 15, 40, 16), 6, 6)
+        p.fillPath(path.simplified(), back)
+        # Photos: sky, sunset and forest, each bobbing with its own phase.
+        colours = (('#8fc0ff', '#4c7bd9'), ('#ffc98f', '#e0663f'), ('#a6e3b0', '#3f9a62'))
+        for i, (sky, ground) in enumerate(colours):
+            bob = (math.sin(self.t * 2.2 + i * 1.3) * 3 if self.animated else 0) - self.lift * (10 + 4 * i)
+            angle = (-12, 0, 12)[i] * (1 + .3 * self.lift)
+            p.save()
+            p.translate(w / 2 + (i - 1) * 24, 48 + bob)
+            p.rotate(angle)
+            card = QRectF(-20, -26, 40, 34)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor('#ffffff'))
+            p.drawRoundedRect(card, 4, 4)
+            pic = card.adjusted(4, 4, -4, -8)
+            p.fillRect(pic, QColor(sky))
+            hill = QPainterPath()
+            hill.moveTo(pic.left(), pic.bottom())
+            hill.lineTo(pic.left() + pic.width() * .35, pic.top() + pic.height() * .45)
+            hill.lineTo(pic.left() + pic.width() * .6, pic.top() + pic.height() * .7)
+            hill.lineTo(pic.right(), pic.top() + pic.height() * .35)
+            hill.lineTo(pic.right(), pic.bottom())
+            hill.closeSubpath()
+            p.fillPath(hill, QColor(ground))
+            p.restore()
+        # Folder front.
+        front = QPainterPath()
+        front.moveTo(w / 2 - 56, 50)
+        front.lineTo(w / 2 + 56, 50)
+        front.lineTo(w / 2 + 50, 88)
+        front.lineTo(w / 2 - 50, 88)
+        front.closeSubpath()
+        g = QLinearGradient(0, 50, 0, 88)
+        g.setColorAt(0, QColor(T['accent_hover']))
+        g.setColorAt(1, accent)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(g)
+        p.drawPath(front)
+        p.setPen(QPen(QColor(255, 255, 255, 90), 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        p.drawLine(QPointF(w / 2 - 16, 72), QPointF(w / 2 + 16, 72))
 
 
 class EmptyState(QWidget):
@@ -27,26 +115,24 @@ class EmptyState(QWidget):
         self.card.setObjectName('Drop')
         self.card.setMaximumWidth(560)
         self.card.setStyleSheet(f'''#Drop {{ background: {T["panel"]}; border: 1.5px dashed {T["border_strong"]}; border-radius: 18px; }}
-                                    #Drop[active="true"] {{ border-color: {T["accent"]}; background: #1b2333; }}''')
+                                    #Drop[active="true"] {{ border-color: {T["accent"]}; background: {T["drop_active"]}; }}''')
         box = QVBoxLayout(self.card)
         box.setContentsMargins(40, 36, 40, 32)
         box.setSpacing(10)
-        icon = QLabel()
-        icon.setPixmap(icons.pixmap('folder_open', T['accent_hover'], 52, width=1.4))
-        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        box.addWidget(icon)
-        title = label('Перетащите папку с фотографиями', 'Big')
+        self.art = FolderArt()
+        box.addWidget(self.art, 0, Qt.AlignmentFlag.AlignHCenter)
+        title = label(tr('Перетащите папку с фотографиями'), 'Big')
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         box.addWidget(title)
-        hint = label('Все снимки папки подготовятся одним пресетом. Оригиналы не меняются —\n'
-                     'результат появится в подпапке PrintPrep_… рядом с ними.', 'Muted')
+        hint = label(tr('Все снимки папки подготовятся одним пресетом. Оригиналы не меняются —\n'
+                     'результат появится в подпапке PrintPrep_… рядом с ними.'), 'Muted')
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         box.addWidget(hint)
         box.addSpacing(8)
-        self.open = button('Выбрать папку…', self.openRequested.emit, 'Primary', 'folder')
+        self.open = button(tr('Выбрать папку…'), self.openRequested.emit, 'Primary', 'folder')
         self.open.setMinimumWidth(200)
         box.addWidget(self.open, 0, Qt.AlignmentFlag.AlignHCenter)
-        formats = label('JPEG · TIFF 8/16 бит · PNG · WebP · BMP', 'Hint')
+        formats = label(tr('JPEG · TIFF 8/16 бит · PNG · WebP · BMP'), 'Hint')
         formats.setAlignment(Qt.AlignmentFlag.AlignCenter)
         box.addWidget(formats)
         self.recent_box = QVBoxLayout()
@@ -67,7 +153,7 @@ class EmptyState(QWidget):
                 w.deleteLater()
         if not folders:
             return
-        head = label('НЕДАВНИЕ ПАПКИ', 'Eyebrow')
+        head = label(tr('НЕДАВНИЕ ПАПКИ'), 'Eyebrow')
         head.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.recent_box.addWidget(head)
         for path in folders[:5]:
@@ -81,6 +167,7 @@ class EmptyState(QWidget):
             self.recent_box.addWidget(b)
 
     def set_drag_active(self, active):
+        self.art.set_active(active)
         self.card.setProperty('active', 'true' if active else 'false')
         self.card.style().unpolish(self.card)
         self.card.style().polish(self.card)
@@ -101,7 +188,7 @@ class Viewer(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMinimumSize(320, 240)
         self.mode = 'empty'
-        self.bg = BACKGROUNDS['dark']
+        self.bg = background('dark')
         self.canvas = (1, 1)
         self.fit_img = self.fit_before = None
         self.roi_img = self.roi_before = None
@@ -131,11 +218,11 @@ class Viewer(QWidget):
         self.roi_timer.setSingleShot(True)
         self.roi_timer.setInterval(140)
         self.roi_timer.timeout.connect(self._request_roi)
-        self.setAccessibleName('Просмотр снимка')
+        self.setAccessibleName(tr('Просмотр снимка'))
 
     # ------------------------------------------------------------ public API
     def set_background(self, name):
-        self.bg = BACKGROUNDS.get(name, BACKGROUNDS['dark'])
+        self.bg = background(name)
         self.update()
 
     def set_empty(self, recent=()):
@@ -146,10 +233,11 @@ class Viewer(QWidget):
         self.clear_status()
         self.update()
 
-    def set_loading(self, aspect):
+    def set_loading(self, aspect, thumb=None):
         self.empty.hide()
         self.mode = 'loading'
         self.loading_aspect = aspect or 1.5
+        self.loading_thumb = thumb if thumb is not None and not thumb.isNull() else None
         self.fit_img = self.fit_before = None
         self.clear_roi()
         self.anim.start()
@@ -327,8 +415,14 @@ class Viewer(QWidget):
         h = w / a
         r = QRectF((self.width() - w) / 2, (self.height() - h) / 2, w, h)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor('#1d1e22'))
-        p.drawRoundedRect(r, 6, 6)
+        thumb = getattr(self, 'loading_thumb', None)
+        if thumb is not None:
+            # Show the filmstrip thumbnail at once; the sharp preview replaces it in a moment.
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            p.drawImage(r, thumb)
+        else:
+            p.setBrush(QColor(T['skeleton']))
+            p.drawRoundedRect(r, 6, 6)
         x = r.left() + (self.spin % 120) / 120 * (r.width() + 300) - 150
         g = QLinearGradient(x - 150, 0, x + 150, 0)
         g.setColorAt(0, QColor(255, 255, 255, 0))
@@ -356,7 +450,7 @@ class Viewer(QWidget):
         p.fillRect(shadow, QColor(0, 0, 0, 90))
         if self.view_mode == 'original' and self.fit_before is not None:
             self._draw_layer(p, disp, self.fit_before, self.roi_before)
-            self._pill(p, 'Исходник · без обработки', QPointF(self.width() / 2, 26))
+            self._pill(p, tr('Исходник · без обработки'), QPointF(self.width() / 2, 26))
         elif self.compare and self.fit_before is not None:
             split_x = self.width() * self.split
             p.save()
@@ -371,8 +465,8 @@ class Viewer(QWidget):
         else:
             self._draw_layer(p, disp, self.fit_img, self.roi_img)
         if self.zoom != 'fit':
-            text = ('1:1 — пиксель файла = пиксель экрана' if float(self.zoom) == 1
-                    else f'{float(self.zoom):g}:1 — увеличено для проверки деталей')
+            text = (tr('1:1 — пиксель файла = пиксель экрана') if float(self.zoom) == 1
+                    else tr('{v:g}:1 — увеличено для проверки деталей', v=float(self.zoom)))
             self._pill(p, text, None, bottom_left=True)
         if self.safe and self.zoom == 'fit':
             px_mm, mm = self.safe
@@ -431,7 +525,7 @@ class Viewer(QWidget):
         p.setPen(QPen(QColor(255, 255, 255, 220), 1.5))
         p.drawEllipse(c, 15, 15)
         p.drawPixmap(QRectF(c.x() - 9, c.y() - 9, 18, 18).toRect(), icons.pixmap('compare', '#ffffff', 18))
-        for text, left in (('До', True), ('После', False)):
+        for text, left in ((tr('До'), True), (tr('После'), False)):
             f = QFont(self.font())
             f.setPointSizeF(9)
             f.setWeight(QFont.Weight.DemiBold)

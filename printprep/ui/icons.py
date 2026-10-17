@@ -56,14 +56,22 @@ PATHS = {
 }
 
 
-def svg(name, color='#e9eaee', width=1.8):
+def svg(name, color=None, width=1.8):
+    from .theme import T
+    color = color or T['text']
     body = PATHS[name].replace('currentColor', color)
     return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{color}" '
             f'stroke-width="{width}" stroke-linecap="round" stroke-linejoin="round">{body}</svg>')
 
 
+def pixmap(name, color=None, size=18, dpr=2.0, width=1.8):
+    from .theme import T
+    color = color or T['text']
+    return _pixmap(name, color, size, dpr, width)
+
+
 @lru_cache(maxsize=512)
-def pixmap(name, color='#e9eaee', size=18, dpr=2.0, width=1.8):
+def _pixmap(name, color, size, dpr, width):
     renderer = QSvgRenderer(QByteArray(svg(name, color, width).encode()))
     pm = QPixmap(round(size * dpr), round(size * dpr))
     pm.fill(Qt.GlobalColor.transparent)
@@ -75,13 +83,15 @@ def pixmap(name, color='#e9eaee', size=18, dpr=2.0, width=1.8):
     return pm
 
 
-def icon(name, color='#b0b3bc', active='#e9eaee', checked='#669eff', size=18):
+def icon(name, color=None, active=None, checked=None, size=18):
+    from .theme import T
+    color, active, checked = color or T['text2'], active or T['text'], checked or T['accent_hover']
     ic = QIcon()
     ic.addPixmap(pixmap(name, color, size), QIcon.Mode.Normal, QIcon.State.Off)
     ic.addPixmap(pixmap(name, active, size), QIcon.Mode.Active, QIcon.State.Off)
     ic.addPixmap(pixmap(name, checked, size), QIcon.Mode.Normal, QIcon.State.On)
     ic.addPixmap(pixmap(name, checked, size), QIcon.Mode.Active, QIcon.State.On)
-    ic.addPixmap(pixmap(name, '#50535b', size), QIcon.Mode.Disabled, QIcon.State.Off)
+    ic.addPixmap(pixmap(name, T['disabled'], size), QIcon.Mode.Disabled, QIcon.State.Off)
     return ic
 
 

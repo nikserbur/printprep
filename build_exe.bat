@@ -24,6 +24,7 @@ powershell -NoProfile -Command "$p = Start-Process -FilePath 'dist\PrintPrep\Pri
 if errorlevel 1 goto :fail
 set QT_QPA_PLATFORM=
 copy /y README.txt dist\README.txt >nul
+copy /y README_EN.txt dist\README_EN.txt >nul
 copy /y THIRD_PARTY.md dist\THIRD_PARTY.md >nul
 .venv-build\Scripts\python.exe tools\package_release.py
 if errorlevel 1 goto :fail

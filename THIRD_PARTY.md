@@ -16,5 +16,6 @@ ICC-профили производителей и тестовый Ghostscript 
 
 
 Встроенная Real-ESRGAN general x4v3: официальные веса https://github.com/xinntao/Real-ESRGAN (BSD-3-Clause), ONNX-экспорт с https://huggingface.co/jonathanst29/tinier-upscale-models; лицензия — licenses/Real-ESRGAN-BSD-3-Clause.txt.
+Веса Real-ESRGAN general wdn x4v3 (для регулировки «Чистота ↔ Детали»): официальный релиз v0.2.5.0, https://github.com/xinntao/Real-ESRGAN/releases (BSD-3-Clause), преобразованы в NumPy скриптом tools/convert_wdn.py.
 Встроенный детектор лиц YuNet 2023mar: https://huggingface.co/opencv/face_detection_yunet (OpenCV Zoo, MIT); лицензия — licenses/YuNet-MIT.txt. Размеры файлов и SHA-256 — assets/models/README.md.
-Иконки интерфейса нарисованы для Print Prep и не заимствованы из сторонних наборов.
+Иконки интерфейса и логотип (абстрактная композиция по мотивам «Нескольких кругов» Кандинского, без копирования картины) нарисованы для Print Prep кодом в tools/make_icon.py и не заимствованы из сторонних наборов.

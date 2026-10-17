@@ -11,12 +11,13 @@ from ..presets import describe, export_preset, read_preset_file
 from . import icons
 from .controls import Chip, FlowRow, button, hline, label
 from .theme import T
+from ..i18n import tr
 
 
 class PresetManager(QDialog):
     def __init__(self, library, active_id, parent=None):
         super().__init__(parent)
-        self.setWindowTitle('Управление пресетами')
+        self.setWindowTitle(tr('Управление пресетами'))
         self.setMinimumSize(760, 480)
         self.library = library
         self.apply_id = None
@@ -25,7 +26,7 @@ class PresetManager(QDialog):
         outer.setContentsMargins(16, 16, 16, 16)
         outer.setSpacing(16)
         left = QVBoxLayout()
-        left.addWidget(label('ВСЕ ПРЕСЕТЫ', 'Eyebrow'))
+        left.addWidget(label(tr('ВСЕ ПРЕСЕТЫ'), 'Eyebrow'))
         self.list = QListWidget()
         self.list.setMinimumWidth(280)
         self.list.setStyleSheet(f'''QListWidget {{ background: {T["panel"]}; border: 1px solid {T["border"]}; border-radius: 10px; padding: 6px; }}
@@ -36,7 +37,7 @@ class PresetManager(QDialog):
         self.list.itemDoubleClicked.connect(lambda _: self._apply())
         left.addWidget(self.list, 1)
         row = QHBoxLayout()
-        row.addWidget(button('Импорт…', self._import, icon_name='upload'))
+        row.addWidget(button(tr('Импорт…'), self._import, icon_name='upload'))
         row.addStretch()
         left.addLayout(row)
         outer.addLayout(left, 1)
@@ -51,17 +52,17 @@ class PresetManager(QDialog):
         right.addWidget(self.note)
         right.addWidget(self.chips)
         right.addWidget(hline())
-        self.apply_btn = button('Применить ко всем фото', self._apply, 'Primary', 'check')
-        self.rename_btn = button('Переименовать…', self._rename, icon_name='edit')
-        self.duplicate_btn = button('Дублировать в «Мои»', self._duplicate, icon_name='copy')
-        self.export_btn = button('Экспорт в файл…', self._export, icon_name='download')
-        self.delete_btn = button('Удалить…', self._delete, 'Danger', 'trash')
+        self.apply_btn = button(tr('Применить ко всем фото'), self._apply, 'Primary', 'check')
+        self.rename_btn = button(tr('Переименовать…'), self._rename, icon_name='edit')
+        self.duplicate_btn = button(tr('Дублировать в «Мои»'), self._duplicate, icon_name='copy')
+        self.export_btn = button(tr('Экспорт в файл…'), self._export, icon_name='download')
+        self.delete_btn = button(tr('Удалить…'), self._delete, 'Danger', 'trash')
         for b in (self.apply_btn, self.rename_btn, self.duplicate_btn, self.export_btn, self.delete_btn):
             right.addWidget(b)
-        right.addWidget(label('Встроенные пресеты не меняются: дублируйте и настраивайте копию. '
-                              'Файл пресета можно отправить коллегам — они импортируют его здесь.', 'Hint', wrap=True))
+        right.addWidget(label(tr('Встроенные пресеты не меняются: дублируйте и настраивайте копию. '
+                              'Файл пресета можно отправить коллегам — они импортируют его здесь.'), 'Hint', wrap=True))
         right.addStretch()
-        close = button('Готово', self.accept)
+        close = button(tr('Готово'), self.accept)
         right.addWidget(close, 0, Qt.AlignmentFlag.AlignRight)
         outer.addLayout(right, 1)
         self._fill(active_id)
@@ -101,7 +102,7 @@ class PresetManager(QDialog):
         if not p:
             return
         self.name.setText(p.name)
-        self.group.setText(('Встроенный · ' if p.builtin else 'Мой · ') + p.group)
+        self.group.setText((tr('Встроенный · ') if p.builtin else tr('Мой · ')) + p.group)
         self.note.setText(p.note)
         self.chips.clear()
         for text in describe(p.settings).split(' · '):
@@ -117,7 +118,7 @@ class PresetManager(QDialog):
         p = self._preset()
         if not p or p.builtin:
             return
-        name, ok = QInputDialog.getText(self, 'Переименовать пресет', 'Новое название:', text=p.name)
+        name, ok = QInputDialog.getText(self, tr('Переименовать пресет'), tr('Новое название:'), text=p.name)
         if ok and name.strip() and name.strip() != p.name:
             try:
                 new = self.library.rename(p.id, name)
@@ -129,13 +130,13 @@ class PresetManager(QDialog):
     def _duplicate(self):
         p = self._preset()
         if p:
-            new = self.library.put(self.library.unique_name(p.name + ' — копия'), p.settings, p.note)
+            new = self.library.put(self.library.unique_name(p.name + tr(' — копия')), p.settings, p.note)
             self.changed = True
             self._fill(new)
 
     def _delete(self):
         p = self._preset()
-        if p and not p.builtin and QMessageBox.question(self, 'Удалить пресет?', f'Удалить «{p.name}»?') == QMessageBox.StandardButton.Yes:
+        if p and not p.builtin and QMessageBox.question(self, tr('Удалить пресет?'), tr('Удалить «{name}»?', name=p.name)) == QMessageBox.StandardButton.Yes:
             self.library.delete(p.id)
             self.changed = True
             self._fill()
@@ -144,12 +145,12 @@ class PresetManager(QDialog):
         p = self._preset()
         if not p:
             return
-        path, _ = QFileDialog.getSaveFileName(self, 'Экспорт пресета', f'{p.name}.printprep.json', 'Пресет Print Prep (*.json)')
+        path, _ = QFileDialog.getSaveFileName(self, tr('Экспорт пресета'), f'{p.name}.printprep.json', tr('Пресет Print Prep (*.json)'))
         if path:
             export_preset(Path(path), p.name, p.settings, p.note)
 
     def _import(self):
-        path, _ = QFileDialog.getOpenFileName(self, 'Импорт пресета', '', 'Print Prep (*.json)')
+        path, _ = QFileDialog.getOpenFileName(self, tr('Импорт пресета'), '', 'Print Prep (*.json)')
         if not path:
             return
         try:
@@ -159,4 +160,4 @@ class PresetManager(QDialog):
             self.changed = True
             self._fill(new)
         except Exception as e:
-            QMessageBox.warning(self, 'Print Prep', f'Не удалось импортировать: {e}')
+            QMessageBox.warning(self, 'Print Prep', tr('Не удалось импортировать: {e}', e=e))

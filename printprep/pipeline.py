@@ -22,6 +22,7 @@ import numpy as np
 from . import analysis as auto
 from .color import LUMA, decode, decode_unit, encode, from_oklab, gamut_clip, luminance, to_oklab
 from .model import ADJUST_RANGES, LOOKS, NUMERIC_ADJUST, Edit, Settings, combined_adjust
+from .i18n import tr
 
 PROXY_EDGE = 2560
 MAP_EDGE = 640
@@ -30,29 +31,59 @@ SKIN = np.array([math.cos(math.radians(58)), math.sin(math.radians(58))], dtype=
 
 # ---------------------------------------------------------------- source & caches
 class Source:
-    """A decoded photo with its proxy, analysis and small per-geometry caches."""
+    """A photo with lazily decoded proxy and full image, analysis and per-geometry caches.
 
-    def __init__(self, info, full, notes=(), analysis=None):
+    The proxy comes from a reduced-scale decode (fast for JPEG) and is all a fit-to-window
+    preview needs; the full image is decoded only for 1:1, the network or the export. Both
+    paths build the proxy the same way, so automatic corrections and tone maps match.
+    """
+
+    def __init__(self, info, proxy=None, notes=(), analysis=None, full=None):
         self.info = info
-        self.full = full
         self.notes = list(notes)
-        self.proxy = make_proxy(full)
+        self._proxy = make_proxy(proxy) if proxy is not None else None
         self.analysis = analysis
+        self._full = full
         self._bases = OrderedDict()
         self._maps = OrderedDict()
         self._lock = threading.Lock()
+        self._load_lock = threading.Lock()
 
     @classmethod
-    def open(cls, info, analysis_cache=None):
-        from .imageio import load
-        full, notes = load(info.path)
+    def open(cls, info, analysis_cache=None, full=False):
+        """Preview path decodes the proxy now; `full=True` (export) decodes only the full image."""
         cached = analysis_cache.get(info.key) if analysis_cache is not None else None
-        source = cls(info, full, notes, cached)
+        source = cls(info, analysis=cached)
+        _ = source.full if full else source.proxy
         return source
+
+    @property
+    def proxy(self):
+        with self._load_lock:
+            if self._proxy is None:
+                from .imageio import load
+                array, notes = load(self.info.path, max_edge=PROXY_EDGE)
+                self.notes = self.notes or notes
+                if self._full is None and max(array.shape[:2]) == max(self.info.size):
+                    self._full = array            # small or non-JPEG: this already is the full image
+                self._proxy = make_proxy(array)
+            return self._proxy
+
+    @property
+    def full(self):
+        with self._load_lock:
+            if self._full is None:
+                from .imageio import load
+                self._full, notes = load(self.info.path)
+                self.notes = self.notes or notes
+            return self._full
+
+    def has_full(self):
+        return self._full is not None
 
     def ensure_analysis(self, analysis_cache=None):
         if self.analysis is None:
-            self.analysis = auto.analyze(self.proxy, self.full)
+            self.analysis = auto.analyze(self.proxy, source_long=max(self.info.size))
             if analysis_cache is not None:
                 analysis_cache.put(self.info.key, self.analysis)
         return self.analysis
@@ -71,7 +102,7 @@ class Source:
         return array
 
     def oriented_size(self, edit):
-        h, w = self.full.shape[:2]
+        w, h = self.info.size
         return straightened_size((h, w) if edit.rotation % 180 else (w, h), edit.angle)
 
 
@@ -272,14 +303,14 @@ def assess(info_size, settings: Settings, edit: Edit | None = None):
     ppi = settings.dpi / scale if settings.size_mode == 'print' else None
     warnings = []
     if ppi is not None and ppi < 150:
-        warnings.append(f'Мало деталей: ≈{ppi:.0f} PPI')
+        warnings.append(tr('Мало деталей: ≈{ppi:.0f} PPI', ppi=ppi))
     elif ppi is not None and ppi < 240:
-        warnings.append(f'≈{ppi:.0f} PPI — проверьте пробу')
+        warnings.append(tr('≈{ppi:.0f} PPI — проверьте пробу', ppi=ppi))
     if scale > 1.02:
-        warnings.append(f'Увеличение ×{scale:.1f}')
+        warnings.append(tr('Увеличение ×{scale:.1f}', scale=scale))
     crop = round(100 * (1 - g.crop_fraction))
     if crop >= 15:
-        warnings.append(f'Обрезка {crop}%')
+        warnings.append(tr('Обрезка {crop}%', crop=crop))
     return {'pixels': g.canvas, 'ppi': None if ppi is None else round(ppi), 'scale': scale,
             'crop_percent': crop, 'upscale': scale > 1.0001, 'downscale': scale < .9999, 'warnings': warnings}
 
@@ -569,15 +600,16 @@ def neural_status(source: Source, settings: Settings, edit: Edit | None, geom: G
         return False, ''
     w, h = geom.source
     if geom.scale < NEURAL_MIN_SCALE:
-        return False, 'Нейросеть не нужна: снимку хватает собственного разрешения.'
+        return False, tr('Нейросеть не нужна: снимку хватает собственного разрешения.')
     if w * h > NEURAL_MAX_MP * 1e6:
-        return False, f'Нейросеть пропущена: исходник больше {NEURAL_MAX_MP:g} Мп — он и так детальный.'
+        return False, tr('Нейросеть пропущена: исходник больше {NEURAL_MAX_MP:g} Мп — он и так детальный.', NEURAL_MAX_MP=NEURAL_MAX_MP)
     return True, ''
 
 
 def enhance_key(source: Source, edit: Edit | None, settings: Settings):
     edit = edit or Edit()
-    return source.info.key + (edit.rotation % 360, round(edit.angle, 3))
+    from .neural import denoise_level
+    return source.info.key + (edit.rotation % 360, round(edit.angle, 3), denoise_level(settings.neural_detail))
 
 
 def enhanced(source: Source, settings: Settings, edit: Edit | None, progress=None, cancel=None, compute=True):
@@ -586,7 +618,8 @@ def enhanced(source: Source, settings: Settings, edit: Edit | None, progress=Non
     key = enhance_key(source, edit, settings)
     entry = neural.CACHE.get(key)
     if entry is None and compute:
-        entry = neural.enhance(source.base(edit or Edit(), True), 1.0, progress, cancel)
+        entry = neural.enhance(source.base(edit or Edit(), True), 1.0, progress, cancel,
+                               level=neural.denoise_level(settings.neural_detail))
         neural.CACHE.put(key, entry)
     return entry
 
@@ -669,10 +702,18 @@ def render(source: Source, settings: Settings, edit: Edit | None = None, *, k=1.
     mx1, my1 = min(iw, want[0] + want[2] + margin), min(ih, want[1] + want[3] + margin)
     plain = source.base(edit, use_full)
     if used_neural:
+        import cv2
         window = _sample(enhanced_source['full'] if use_full else enhanced_source['proxy'], geom, iw, (mx0, my0, mx1, my1))
+        plain_window = _sample(plain, geom, iw, (mx0, my0, mx1, my1))
         strength = settings.neural_strength / 100
         if strength < 1:
-            window = window * strength + _sample(plain, geom, iw, (mx0, my0, mx1, my1)) * (1 - strength)
+            window = window * strength + plain_window * (1 - strength)
+        texture = .4 * settings.neural_detail / 100
+        if texture > 0:
+            # Give back the source's own fine texture and grain that the network smooths away.
+            src_scale = iw / max(1e-6, (geom.crop[2] - geom.crop[0]) * geom.source[0])
+            sigma = max(.6, .5 * src_scale)
+            window = np.clip(window + texture * (plain_window - cv2.GaussianBlur(plain_window, (0, 0), sigma)), 0, 1)
     else:
         window = _sample(plain, geom, iw, (mx0, my0, mx1, my1))
     if not before:
@@ -683,7 +724,7 @@ def render(source: Source, settings: Settings, edit: Edit | None = None, *, k=1.
         if not preview or k >= .5:
             window = output_sharpen(window, settings, k)
         if used_neural:
-            notes.append('Нейросеть применена.')
+            notes.append(tr('Нейросеть применена.'))
     part = window[want[1] - my0:want[1] - my0 + want[3], want[0] - mx0:want[0] - mx0 + want[2]]
     canvas[iy0 - ry:iy1 - ry, ix0 - rx:ix1 - rx] = part
     return Rendered(canvas, geom, notes, used_neural)

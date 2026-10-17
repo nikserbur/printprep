@@ -7,8 +7,8 @@ import threading
 from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, QSize, QStandardPaths, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QIcon, QKeySequence, QShortcut
+from PySide6.QtCore import QSize, QStandardPaths, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (QFileDialog, QFrame, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu,
                                QMessageBox, QProgressBar, QSplitter, QToolButton, QVBoxLayout, QWidget)
 
@@ -24,10 +24,12 @@ from .controls import Chip, FlowRow, Segmented, Spinner, Toast, button, label, t
 from .filmstrip import Filmstrip
 from .inspector import Inspector
 from .presets_panel import PresetPanel
+from .store import prefs
 from .services import ExportJob, NeuralWorker, PreviewRequest, RenderService, ThumbnailLoader, batch_summary
 from .preset_manager import PresetManager
 from .theme import T
 from .viewer import Viewer
+from ..i18n import tr
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -35,24 +37,24 @@ ROOT = Path(__file__).resolve().parents[2]
 def preset_summary(s: Settings):
     from ..model import LOOKS
     if s.size_mode == 'original':
-        size = ['Исходный размер']
+        size = [tr('Исходный размер')]
     elif s.size_mode == 'long_edge':
-        size = [f'{s.long_edge} px по стороне']
+        size = [tr('{long_edge} px по стороне', long_edge=s.long_edge)]
     elif s.size_mode == 'pixels':
         size = [f'{s.pixel_width}×{s.pixel_height} px']
     else:
-        size = [f'{s.width_mm:g}×{s.height_mm:g} мм', f'{s.dpi} PPI']
-    parts = size + [s.format + (f' {s.quality}' if s.format == 'JPEG' else f' {s.bit_depth} бит')]
+        size = [tr('{width_mm:g}×{height_mm:g} мм', width_mm=s.width_mm, height_mm=s.height_mm), f'{s.dpi} PPI']
+    parts = size + [s.format + (f' {s.quality}' if s.format == 'JPEG' else tr(' {bit_depth} бит', bit_depth=s.bit_depth))]
     if s.adjust.auto:
-        parts.append(f'Авто {s.adjust.auto_strength:.0f}%')
+        parts.append(tr('Авто {auto_strength:.0f}%', auto_strength=s.adjust.auto_strength))
     if s.adjust.look != 'none':
-        parts.append(LOOKS[s.adjust.look][0])
+        parts.append(tr(LOOKS[s.adjust.look][0]))
     if s.neural:
-        parts.append('Нейросеть')
+        parts.append(tr('Нейросеть'))
     if s.sharpen != 'off':
-        parts.append({'screen': 'Резкость: экран', 'glossy': 'Резкость: глянец', 'matte': 'Резкость: мат'}[s.sharpen])
+        parts.append({'screen': tr('Резкость: экран'), 'glossy': tr('Резкость: глянец'), 'matte': tr('Резкость: мат')}[s.sharpen])
     if s.output_space == 'ICC':
-        parts.append('ICC принтера')
+        parts.append(tr('ICC принтера'))
     return parts
 
 
@@ -91,6 +93,18 @@ class ScanWorker(threading.Thread):
         self.callback(photos, errors)
 
 
+class ResponsiveBar(QFrame):
+    """Calls back with its width so the toolbar can switch to icons when the window is narrow."""
+
+    def __init__(self, on_width):
+        super().__init__()
+        self.on_width = on_width
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self.on_width(self.width())
+
+
 class MainWindow(QMainWindow):
     scanned = Signal(object, object)
     scanProgress = Signal(int, int)
@@ -101,11 +115,11 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(QIcon(str(ROOT / 'assets' / 'printprep.png')))
         self.setAcceptDrops(True)
         self.setMinimumSize(1100, 680)
-        self.store = QSettings('PrintPrep', 'PrintPrep2')
+        self.store = prefs()
         data = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
         self.data_dir = Path(data or Path.home() / '.printprep')
         self.library = PresetLibrary(self.data_dir)
-        self.library.migrate_qsettings(QSettings('PrintPrep', 'PrintPrep'))
+        self.library.migrate_qsettings(prefs('PrintPrep'))
         self.cache = AnalysisCache()
         self.neural = NeuralWorker(self)
         self.service = RenderService(self.cache, self.neural, self)
@@ -130,6 +144,7 @@ class MainWindow(QMainWindow):
         self.undo_stack, self.redo_stack = [], []
         self.committed = None
         self.last_result = None
+        self.last_request = None
         self._build()
         self._restore()
         self.preview_timer = QTimer(self)
@@ -152,7 +167,7 @@ class MainWindow(QMainWindow):
         self.neural.failed.connect(self._neural_failed)
         self.thumbs.ready.connect(lambda gen, path, img: self.strip.set_thumb(path, img))
         self.scanned.connect(self._on_scanned)
-        self.scanProgress.connect(lambda i, n: self.viewer.set_status(f'Читаем папку… {i} из {n}', i / max(1, n)))
+        self.scanProgress.connect(lambda i, n: self.viewer.set_status(tr('Читаем папку… {i} из {n}', i=i, n=n), i / max(1, n)))
         self._shortcuts()
         self._refresh_presets()
         self._sync_all()
@@ -230,12 +245,16 @@ class MainWindow(QMainWindow):
         row.setContentsMargins(16, 8, 14, 8)
         row.setSpacing(10)
         mark = QLabel()
-        mark.setPixmap(icons.pixmap('printer', T['accent_hover'], 22, width=1.7))
+        logo = QPixmap(str(ROOT / 'assets' / 'printprep.png'))
+        dpr = self.devicePixelRatioF()
+        logo = logo.scaled(round(26 * dpr), round(26 * dpr), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        logo.setDevicePixelRatio(dpr)
+        mark.setPixmap(logo)
         row.addWidget(mark)
         row.addWidget(label('Print Prep', 'Brand'))
         row.addSpacing(14)
         self.folder_btn = QToolButton()
-        self.folder_btn.setText('  Открыть папку')
+        self.folder_btn.setText(tr('  Открыть папку'))
         self.folder_btn.setIcon(icons.icon('folder', T['text2'], T['text']))
         self.folder_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.folder_btn.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
@@ -246,13 +265,13 @@ class MainWindow(QMainWindow):
         self.folder_menu = QMenu(self.folder_btn)
         self.folder_menu.aboutToShow.connect(self._fill_folder_menu)
         self.folder_btn.setMenu(self.folder_menu)
-        self.folder_btn.setToolTip('Открыть папку со снимками (Ctrl+O)')
+        self.folder_btn.setToolTip(tr('Открыть папку со снимками (Ctrl+O)'))
         row.addWidget(self.folder_btn)
         texts = QVBoxLayout()
         texts.setSpacing(0)
-        self.folder_title = label('Папка не выбрана', None)
+        self.folder_title = label(tr('Папка не выбрана'), None)
         self.folder_title.setStyleSheet('font-weight: 600;')
-        self.folder_sub = label('Перетащите папку в окно', 'Hint')
+        self.folder_sub = label(tr('Перетащите папку в окно'), 'Hint')
         texts.addWidget(self.folder_title)
         texts.addWidget(self.folder_sub)
         row.addLayout(texts, 1)
@@ -261,18 +280,19 @@ class MainWindow(QMainWindow):
         self.summary_chip.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.summary_chip.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.summary_chip.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.summary_chip.setStyleSheet('QToolButton { background: rgba(242,177,74,0.12); color: #f5c475; border: 1px solid rgba(242,177,74,0.35);'
+        self.summary_chip.setStyleSheet(f'QToolButton {{ background: rgba(242,177,74,0.12); color: {T["chip_warning"]}; border: 1px solid rgba(242,177,74,0.35);'
                                         ' border-radius: 14px; padding: 4px 10px; font-size: 12px; }'
                                         'QToolButton:hover { background: rgba(242,177,74,0.2); }')
         self.summary_menu = QMenu(self.summary_chip)
         self.summary_chip.setMenu(self.summary_menu)
         self.summary_chip.hide()
         row.addWidget(self.summary_chip)
-        self.undo_btn = tool('undo', 'Отменить (Ctrl+Z)', self.undo)
-        self.redo_btn = tool('redo', 'Повторить (Ctrl+Y)', self.redo)
+        self.undo_btn = tool('undo', tr('Отменить (Ctrl+Z)'), self.undo)
+        self.redo_btn = tool('redo', tr('Повторить (Ctrl+Y)'), self.redo)
         row.addWidget(self.undo_btn)
         row.addWidget(self.redo_btn)
-        row.addWidget(tool('help', 'Справка и горячие клавиши (F1)', self.show_help))
+        row.addWidget(tool('help', tr('Справка и горячие клавиши (F1)'), self.show_help))
+        row.addWidget(tool('sliders', tr('Настройки приложения: тема, язык, обучение'), self.open_app_settings))
         row.addSpacing(6)
         self.progress_box = QWidget()
         pl = QHBoxLayout(self.progress_box)
@@ -282,62 +302,65 @@ class MainWindow(QMainWindow):
         pl.addWidget(self.export_spinner)
         pv = QVBoxLayout()
         pv.setSpacing(3)
-        self.progress_text = label('Готовим…', None)
+        self.progress_text = label(tr('Готовим…'), None)
         self.progress_text.setStyleSheet('font-size: 12px;')
         self.progress_bar = QProgressBar()
         self.progress_bar.setFixedWidth(200)
         pv.addWidget(self.progress_text)
         pv.addWidget(self.progress_bar)
         pl.addLayout(pv)
-        self.stop_btn = button('Стоп', self.cancel_export, None, 'stop')
+        self.stop_btn = button(tr('Стоп'), self.cancel_export, None, 'stop')
         pl.addWidget(self.stop_btn)
         self.progress_box.hide()
         row.addWidget(self.progress_box)
-        self.export_btn = button('Подготовить', self.export, 'Primary', 'arrow_right')
+        self.export_btn = button(tr('Подготовить'), self.export, 'Primary', 'arrow_right')
         self.export_btn.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self.export_btn.setMinimumHeight(36)
-        self.export_btn.setToolTip('Обработать все снимки папки выбранным пресетом (Ctrl+E)')
+        self.export_btn.setToolTip(tr('Обработать все снимки папки выбранным пресетом (Ctrl+E)'))
         row.addWidget(self.export_btn)
         return bar
 
     def _viewer_bar(self):
-        bar = QFrame()
+        bar = ResponsiveBar(self._fit_viewer_bar)
         bar.setObjectName('ViewerBar')
+        self.bar_compact = False
         row = QHBoxLayout(bar)
         row.setContentsMargins(12, 8, 12, 6)
         row.setSpacing(6)
-        self.view_seg = Segmented([('Результат', 'result', 'Только обработанный снимок'),
-                                   ('До / после', 'split', 'Шторка: слева исходник, справа результат. Тяните шторку мышью (\\)'),
-                                   ('Исходник', 'original', 'Снимок без обработки в том же кадре')], compact=True)
+        self.view_seg = Segmented([(tr('Результат'), 'result', tr('Только обработанный снимок')),
+                                   (tr('До / после'), 'split', tr('Шторка: слева исходник, справа результат. Тяните шторку мышью (\\)')),
+                                   (tr('Исходник'), 'original', tr('Снимок без обработки в том же кадре'))], compact=True)
         self.view_seg.changed.connect(self.set_view_mode)
         row.addWidget(self.view_seg)
         row.addSpacing(4)
-        self.zoom_seg = Segmented([('По окну', 'fit', 'Весь кадр в окне (Пробел)'),
-                                   ('1:1', 1.0, 'Масштаб 1:1 — один пиксель файла на один пиксель экрана.\n'
-                                                'Так видны реальная резкость, шум и работа нейросети.'),
-                                   ('2:1', 2.0, 'Увеличение вдвое — для проверки мелких деталей')], compact=True)
+        self.zoom_seg = Segmented([(tr('По окну'), 'fit', tr('Весь кадр в окне (Пробел)')),
+                                   ('1:1', 1.0, tr('Масштаб 1:1 — один пиксель файла на один пиксель экрана.\n'
+                                                'Так видны реальная резкость, шум и работа нейросети.')),
+                                   ('2:1', 2.0, tr('Увеличение вдвое — для проверки мелких деталей'))], compact=True)
         self.zoom_seg.setValue('fit')
         self.zoom_seg.changed.connect(lambda z: self.viewer.set_zoom(z))
         row.addWidget(self.zoom_seg)
         row.addSpacing(6)
-        self.crop_tool = tool('crop', 'Кадрирование этого снимка (C)', lambda on: self.set_crop_mode(on), checkable=True)
-        self.rot_l = tool('rotate_left', 'Повернуть против часовой (Ctrl+[)', lambda: self.rotate(-90))
-        self.rot_r = tool('rotate_right', 'Повернуть по часовой (Ctrl+])', lambda: self.rotate(90))
-        self.safe_btn = tool('safe', 'Безопасная зона печати: 3 мм от края', self._toggle_safe, checkable=True)
-        self.proof_btn = tool('eye', 'Экранная проба ICC-профиля', self._toggle_proof, checkable=True)
-        self.gamut_btn = tool('warning', 'Показать цвета вне охвата принтера', self._toggle_proof, checkable=True)
+        self.crop_tool = tool('crop', tr('Кадрирование этого снимка (C)'), lambda on: self.set_crop_mode(on), checkable=True)
+        self.rot_l = tool('rotate_left', tr('Повернуть против часовой (Ctrl+[)'), lambda: self.rotate(-90))
+        self.rot_r = tool('rotate_right', tr('Повернуть по часовой (Ctrl+])'), lambda: self.rotate(90))
+        self.safe_btn = tool('safe', tr('Безопасная зона печати: 3 мм от края'), self._toggle_safe, checkable=True)
+        self.proof_btn = tool('eye', tr('Экранная проба ICC-профиля'), self._toggle_proof, checkable=True)
+        self.gamut_btn = tool('warning', tr('Показать цвета вне охвата принтера'), self._toggle_proof, checkable=True)
         for w in (self.crop_tool, self.rot_l, self.rot_r, self.safe_btn, self.proof_btn, self.gamut_btn):
             row.addWidget(w)
-        self.crop_done = button('Готово', lambda: self.set_crop_mode(False), 'Primary', 'check')
+        self.crop_done = button(tr('Готово'), lambda: self.set_crop_mode(False), 'Primary', 'check')
         self.crop_done.hide()
         row.addWidget(self.crop_done)
         row.addStretch()
         self.nav_label = label('', 'Hint')
         row.addWidget(self.nav_label)
-        row.addWidget(tool('chevron_left', 'Предыдущий снимок (←)', lambda: self.step(-1)))
-        row.addWidget(tool('chevron_right', 'Следующий снимок (→)', lambda: self.step(1)))
+        self.nav_prev = tool('chevron_left', tr('Предыдущий снимок (←)'), lambda: self.step(-1))
+        self.nav_next = tool('chevron_right', tr('Следующий снимок (→)'), lambda: self.step(1))
+        row.addWidget(self.nav_prev)
+        row.addWidget(self.nav_next)
         row.addSpacing(6)
-        self.bg_seg = Segmented([('', 'dark', 'Тёмный фон'), ('', 'gray', 'Средне-серый фон (ISO 12646)'), ('', 'light', 'Светлый фон')], compact=True)
+        self.bg_seg = Segmented([('', 'dark', tr('Тёмный фон')), ('', 'gray', tr('Средне-серый фон (ISO 12646)')), ('', 'light', tr('Светлый фон'))], compact=True)
         for key, swatch in (('dark', T['viewer_dark']), ('gray', T['viewer_gray']), ('light', T['viewer_light'])):
             b = self.bg_seg.buttons[key]
             b.setFixedWidth(26)
@@ -347,6 +370,24 @@ class MainWindow(QMainWindow):
         self.bg_seg.changed.connect(self._set_background)
         row.addWidget(self.bg_seg)
         return bar
+
+    def _fit_viewer_bar(self, width):
+        compact = width < 800 if not self.bar_compact else width < 860
+        if compact == self.bar_compact or not hasattr(self, 'bg_seg'):
+            return
+        self.bar_compact = compact
+        glyphs = {'result': 'sparkles', 'split': 'compare', 'original': 'image', 'fit': 'fit'}
+        for seg in (self.view_seg, self.zoom_seg):
+            for value, b in seg.buttons.items():
+                if value not in glyphs:
+                    continue
+                if not b.property('full_text'):
+                    b.setProperty('full_text', b.text())
+                b.setText('' if compact else b.property('full_text'))
+                b.setIcon(icons.icon(glyphs[value]) if compact else QIcon())
+                b.setIconSize(QSize(16, 16))
+        for w in (self.nav_label, self.nav_prev, self.nav_next):
+            w.setVisible(not compact)      # the filmstrip and the arrow keys still navigate
 
     def _status_bar(self):
         bar = QFrame()
@@ -360,7 +401,7 @@ class MainWindow(QMainWindow):
         self.status_file = QLabel('')
         self.status_render = QLabel('')
         self.status_neural = QLabel('')
-        self.status_cpu = QLabel(f'Процессор: {os.cpu_count() or 1} потоков · работа локально, без интернета')
+        self.status_cpu = QLabel(tr('Процессор: {v} потоков · работа локально, без интернета', v=os.cpu_count() or 1))
         row.addWidget(self.status_file, 1)
         row.addWidget(self.status_neural)
         row.addWidget(self.status_render)
@@ -424,7 +465,7 @@ class MainWindow(QMainWindow):
                 self.split.setSizes([int(v) for v in sizes])
             except (TypeError, ValueError):
                 pass
-        bg = self.store.value('viewer_bg', 'dark')
+        bg = self.store.value('viewer_bg', 'gray' if T['name'] == 'light' else 'dark')
         self.bg_seg.setValue(bg)
         self.viewer.set_background(bg)
         self.view_mode = self.store.value('view_mode', 'split') or 'split'
@@ -464,7 +505,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, e):
         if self.export_job and self.export_job.running():
-            if QMessageBox.question(self, 'Print Prep', 'Идёт подготовка фотографий. Остановить и закрыть?') != QMessageBox.StandardButton.Yes:
+            if QMessageBox.question(self, 'Print Prep', tr('Идёт подготовка фотографий. Остановить и закрыть?')) != QMessageBox.StandardButton.Yes:
                 e.ignore()
                 return
             self.export_job.cancel()
@@ -485,12 +526,12 @@ class MainWindow(QMainWindow):
     def _fill_folder_menu(self):
         m = self.folder_menu
         m.clear()
-        m.addAction(icons.icon('folder'), 'Открыть папку…', self.choose_folder)
-        sub = m.addAction('Искать и во вложенных папках')
+        m.addAction(icons.icon('folder'), tr('Открыть папку…'), self.choose_folder)
+        sub = m.addAction(tr('Искать и во вложенных папках'))
         sub.setCheckable(True)
         sub.setChecked(self.store.value('recursive', False, type=bool))
         sub.toggled.connect(self._toggle_recursive)
-        act = m.addAction(icons.icon('reset'), 'Перечитать папку', lambda: self.load_folder(self.folder))
+        act = m.addAction(icons.icon('reset'), tr('Перечитать папку'), lambda: self.load_folder(self.folder))
         act.setEnabled(self.folder is not None)
         recent = self._recent()
         if recent:
@@ -498,8 +539,8 @@ class MainWindow(QMainWindow):
             for path in recent:
                 m.addAction(path, lambda p=path: self.load_folder(Path(p)))
         m.addSeparator()
-        m.addAction(icons.icon('upload'), 'Импортировать рецепт (пресет + правки)…', self.import_preset_file)
-        rec = m.addAction(icons.icon('download'), 'Экспортировать рецепт…', self.export_recipe_file)
+        m.addAction(icons.icon('upload'), tr('Импортировать рецепт (пресет + правки)…'), self.import_preset_file)
+        rec = m.addAction(icons.icon('download'), tr('Экспортировать рецепт…'), self.export_recipe_file)
         rec.setEnabled(self.folder is not None)
 
     def _toggle_recursive(self, on):
@@ -509,13 +550,14 @@ class MainWindow(QMainWindow):
 
     def choose_folder(self):
         start = str(self.folder or (self._recent() or [str(Path.home())])[0])
-        folder = QFileDialog.getExistingDirectory(self, 'Папка с фотографиями', start)
+        folder = QFileDialog.getExistingDirectory(self, tr('Папка с фотографиями'), start)
         if folder:
             self.load_folder(Path(folder))
 
-    def load_folder(self, folder):
+    def load_folder(self, folder, select=0):
         if folder is None or not Path(folder).is_dir():
             return
+        self.pending_select = select or 0
         if self.scan_worker:
             self.scan_worker.cancelled = True
         self._save_session()
@@ -527,10 +569,10 @@ class MainWindow(QMainWindow):
         self.service.drop_source()
         self.strip.set_photos([])
         self.folder_title.setText(self.folder.name or str(self.folder))
-        self.folder_sub.setText('Читаем папку…')
+        self.folder_sub.setText(tr('Читаем папку…'))
         self.folder_title.setToolTip(str(self.folder))
         self.viewer.set_loading(1.5)
-        self.viewer.set_status('Читаем папку…')
+        self.viewer.set_status(tr('Читаем папку…'))
         self.scan_worker = ScanWorker(self.folder, self.store.value('recursive', False, type=bool),
                                       lambda p, e: self.scanned.emit(p, e), lambda i, n: self.scanProgress.emit(i, n))
         self.scan_worker.start()
@@ -543,16 +585,16 @@ class MainWindow(QMainWindow):
         self.thumbs.load([p.path for p in photos])
         if not photos:
             self.viewer.set_empty(self._recent())
-            self.folder_sub.setText('Нет поддерживаемых снимков')
-            self.toast.show_message('В папке нет поддерживаемых фотографий', 'Выберите другую папку или включите поиск во вложенных папках.', 'warning')
+            self.folder_sub.setText(tr('Нет поддерживаемых снимков'))
+            self.toast.show_message(tr('В папке нет поддерживаемых фотографий'), tr('Выберите другую папку или включите поиск во вложенных папках.'), 'warning')
         else:
-            self.strip.select_row(0)
+            self.strip.select_row(min(max(0, getattr(self, 'pending_select', 0)), len(photos) - 1))
             if self.edits:
-                self.toast.show_message(f'Восстановлены правки: {len(self.edits)}', 'Правки снимков этой папки сохраняются автоматически.', 'info', timeout=4000)
+                self.toast.show_message(tr('Восстановлены правки: {n}', n=len(self.edits)), tr('Правки снимков этой папки сохраняются автоматически.'), 'info', timeout=4000)
         if errors:
             box = QMessageBox(self)
-            box.setWindowTitle('Некоторые файлы не прочитаны')
-            box.setText(f'Пропущено файлов: {len(errors)}. Остальные доступны.')
+            box.setWindowTitle(tr('Некоторые файлы не прочитаны'))
+            box.setText(tr('Пропущено файлов: {n}. Остальные доступны.', n=len(errors)))
             box.setDetailedText('\n'.join(f'{p.name}: {e}' for p, e in errors))
             box.exec()
         self._sync_all()
@@ -564,13 +606,12 @@ class MainWindow(QMainWindow):
         self.current = row
         photo = self.photos[row]
         self.viewer.set_canvas(assess(photo.size, self.settings, self.edits.get(str(photo.path)))['pixels'], reset=True)
-        self.viewer.set_loading(photo.size[0] / max(1, photo.size[1]))
+        self.viewer.set_loading(photo.size[0] / max(1, photo.size[1]), self.strip.model_.thumbs.get(str(photo.path)))
         self.fit_done_key = None
         if self.crop_mode:
             self.set_crop_mode(False)
         self.viewer.set_neural_badge(None)
-        self.status_file.setText(f'{photo.path.name} · {photo.size[0]} × {photo.size[1]} px · {photo.megapixels:.1f} Мп · '
-                                 f'{photo.bits} бит · {photo.profile}')
+        self.status_file.setText(tr('{name} · {v} × {v2} px · {megapixels:.1f} Мп · {bits} бит · {profile}', name=photo.path.name, v=photo.size[0], v2=photo.size[1], megapixels=photo.megapixels, bits=photo.bits, profile=photo.profile))
         self._sync_inspector()
         self._update_info()
         self._schedule(0)
@@ -668,7 +709,9 @@ class MainWindow(QMainWindow):
         preset = self.library.get(self.active_id)
         dirty = self._dirty()
         own = bool(preset and not preset.builtin)
-        self.inspector.set_preset_info(preset.name if preset else 'Свои настройки', dirty, own, preset_summary(self.settings))
+        name = preset.name if preset else tr('Свои настройки')
+        self.inspector.set_preset_info(name, dirty, own, preset_summary(self.settings))
+        self.inspector.set_context(name, len(self.photos))
         self.presets.set_state(self.active_id, dirty)
 
     def _sync_all(self):
@@ -676,7 +719,7 @@ class MainWindow(QMainWindow):
         self._update_preset_card()
         n = len(self.photos)
         if self.folder:
-            self.folder_sub.setText(f'{n} фото · {self.folder}' if n else str(self.folder))
+            self.folder_sub.setText(tr('{n} фото · {folder}', n=n, folder=self.folder) if n else str(self.folder))
         self._update_export_button()
         self._update_undo()
         self._update_info()
@@ -693,7 +736,7 @@ class MainWindow(QMainWindow):
     def _update_export_button(self):
         n = len(self.photos)
         running = bool(self.export_job and self.export_job.running())
-        self.export_btn.setText(f'Подготовить {n} фото' if n else 'Подготовить')
+        self.export_btn.setText(tr('Подготовить {n} фото', n=n) if n else tr('Подготовить'))
         self.export_btn.setEnabled(n > 0 and not running)
         self.export_btn.setVisible(not running)
 
@@ -709,7 +752,7 @@ class MainWindow(QMainWindow):
             info = assess(photo.size, self.settings, edit)
             warning = info['warnings'][0] if info['warnings'] else ''
             if info['upscale'] and not self.settings.allow_upscale:
-                warning = 'Будет пропущен: увеличение запрещено'
+                warning = tr('Будет пропущен: увеличение запрещено')
             badges[str(photo.path)] = dict(edited=bool(edit and not edit.is_default()), warning=warning)
             if warning and problems < 40:
                 problems += 1
@@ -719,19 +762,19 @@ class MainWindow(QMainWindow):
         s = batch_summary(self.photos, self.settings, self.edits)
         parts, tips = [], []
         if s['low']:
-            parts.append(f'{s["low"]} ниже 240 PPI')
-            tips.append('Детализации может не хватить для выбранного размера печати.')
+            parts.append(tr('{low} ниже 240 PPI', low=s["low"]))
+            tips.append(tr('Детализации может не хватить для выбранного размера печати.'))
         if s['up'] and not self.settings.allow_upscale:
-            parts.append(f'{s["up"]} будут пропущены')
-            tips.append('Увеличение запрещено, а эти снимки меньше нужного размера.')
+            parts.append(tr('{up} будут пропущены', up=s["up"]))
+            tips.append(tr('Увеличение запрещено, а эти снимки меньше нужного размера.'))
         if s['crop']:
-            parts.append(f'{s["crop"]} с обрезкой ≥15%')
-            tips.append('Проверьте кадр или выберите «Вписать».')
+            parts.append(tr('{crop} с обрезкой ≥15%', crop=s["crop"]))
+            tips.append(tr('Проверьте кадр или выберите «Вписать».'))
         self.summary_chip.setVisible(bool(parts))
         self.summary_chip.setText(' · '.join(parts))
         self.summary_chip.setToolTip('\n'.join(tips))
         n = len(self.photos)
-        self.nav_label.setText(f'{self.current + 1} / {n}' + (f' · с правками: {s["edited"]}' if s['edited'] else '') if n else '')
+        self.nav_label.setText(f'{self.current + 1} / {n}' + (tr(' · с правками: {edited}', edited=s["edited"]) if s['edited'] else '') if n else '')
 
     def _update_info(self, notes=None):
         self.info_flow.clear()
@@ -745,22 +788,22 @@ class MainWindow(QMainWindow):
             kind = 'success' if info['ppi'] >= 240 else 'warning'
             self.info_flow.add(Chip(f'≈ {info["ppi"]} PPI', kind))
         if info['downscale']:
-            self.info_flow.add(Chip(f'уменьшение ×{1 / info["scale"]:.1f}', 'neutral'))
+            self.info_flow.add(Chip(tr('уменьшение ×{v:.1f}', v=1 / info["scale"]), 'neutral'))
         for text in info['warnings']:
             if 'PPI' not in text:
                 self.info_flow.add(Chip(text, 'warning'))
         from ..model import NEURAL_MIN_SCALE
         from ..pipeline import neural_wanted
         if info['scale'] >= NEURAL_MIN_SCALE and not neural_wanted(self.settings, self.edit()) and p.megapixels <= 4:
-            self.info_flow.add(Chip('Мало разрешения — поможет нейросеть', 'neural'))
+            self.info_flow.add(Chip(tr('Мало разрешения — поможет нейросеть'), 'neural'))
         for text in notes or []:
-            if 'Нейросеть применена' in text:
-                self.info_flow.add(Chip('Нейросеть ✓', 'neural'))
-            elif not text.startswith('Нейросеть'):
+            if tr('Нейросеть применена') in text:
+                self.info_flow.add(Chip(tr('Нейросеть ✓'), 'neural'))
+            elif not text.startswith(tr('Нейросеть')):
                 self.info_flow.add(Chip(text, 'neutral'))
         e = self.edit()
         if e and not e.is_default():
-            self.info_flow.add(Chip('есть правки снимка', 'accent'))
+            self.info_flow.add(Chip(tr('есть правки снимка'), 'accent'))
 
     # ================================================================= preview
     def _key(self):
@@ -790,8 +833,11 @@ class MainWindow(QMainWindow):
         target = max(600, min(2600, int(target * (.5 if getattr(self, '_interactive', False) else 1))))
         self.gen += 1
         self.fit_key = key
-        self.service.request(PreviewRequest(self.gen, p, copy_settings(self.settings), copy_edit(self.edit() or Edit()), 'fit',
-                                            target, None, self.view_mode != 'result', self.proof_btn.isChecked(), self.gamut_btn.isChecked()))
+        req = PreviewRequest(self.gen, p, copy_settings(self.settings), copy_edit(self.edit() or Edit()), 'fit',
+                             target, None, self.view_mode != 'result', self.proof_btn.isChecked(), self.gamut_btn.isChecked())
+        if not getattr(self, '_interactive', False):
+            self.last_request = req
+        self.service.request(req)
         if getattr(self, '_interactive', False):
             self._interactive = False
             self.preview_timer.start(260)
@@ -821,7 +867,7 @@ class MainWindow(QMainWindow):
     def _on_failed(self, gen, text):
         if gen == self.gen:
             self.viewer.clear_status()
-            self.toast.show_message('Не удалось построить просмотр', text, 'danger')
+            self.toast.show_message(tr('Не удалось построить просмотр'), text, 'danger')
 
     def _on_analyzed(self, path, analysis):
         first = path not in self.analyses
@@ -851,6 +897,7 @@ class MainWindow(QMainWindow):
             self.fit_done_key = self.fit_key
             if result.hist:
                 self.inspector.set_histogram(result.hist)
+            self._prefetch_neighbours()
         else:
             self.viewer.set_roi(result.image, result.region, result.before)
             if self.fit_done_key != self._key():
@@ -858,8 +905,20 @@ class MainWindow(QMainWindow):
         self.last_result = result
         self._show_neural_state(result.neural, result.neural_reason)
         self._update_info(result.notes)
-        self.time_label.setText(f'{result.seconds * 1000:.0f} мс')
-        self.status_render.setText(f'Просмотр: {result.seconds * 1000:.0f} мс')
+        self.time_label.setText(tr('{v:.0f} мс', v=result.seconds * 1000))
+        self.status_render.setText(tr('Просмотр: {v:.0f} мс', v=result.seconds * 1000))
+
+    def _prefetch_neighbours(self):
+        """Decode, analyse and render the next and previous photos while the user looks at this one."""
+        if not self.last_request:
+            return
+        jobs = []
+        for row in (self.current + 1, self.current - 1, self.current + 2):
+            if 0 <= row < len(self.photos) and row != self.current:
+                photo = self.photos[row]
+                jobs.append(replace(self.last_request, gen=0, info=photo,
+                                    edit=copy_edit(self.edits.get(str(photo.path)) or Edit())))
+        self.service.prefetch(jobs)
 
     # ================================================================= neural
     def _enhance_key(self):
@@ -867,7 +926,8 @@ class MainWindow(QMainWindow):
         if not p:
             return None
         e = self.edit() or Edit()
-        return p.key + (e.rotation % 360, round(e.angle, 3))
+        from ..neural import denoise_level
+        return p.key + (e.rotation % 360, round(e.angle, 3), denoise_level(self.settings.neural_detail))
 
     def _show_neural_state(self, state, reason=''):
         key = self._enhance_key()
@@ -878,24 +938,24 @@ class MainWindow(QMainWindow):
             return
         self.inspector.set_neural_state(state, reason)
         if state == 'pending':
-            self.viewer.set_neural_badge('Нейросеть: готовим улучшение снимка…', 0.)
+            self.viewer.set_neural_badge(tr('Нейросеть: готовим улучшение снимка…'), 0.)
         else:
             self.viewer.set_neural_badge(None)
 
     @staticmethod
     def _neural_text(f, eta):
-        return f'Нейросеть улучшает снимок · {f * 100:.0f}%' + (f' · ещё ≈ {eta:.0f} с' if eta >= 1 else '')
+        return tr('Нейросеть улучшает снимок · {v:.0f}%', v=f * 100) + (tr(' · ещё ≈ {eta:.0f} с', eta=eta) if eta >= 1 else '')
 
     def _neural_progress(self, key, fraction, eta):
         self.neural_progress[key] = (fraction, eta)
-        self.status_neural.setText(f'Нейросеть: {fraction * 100:.0f}%')
+        self.status_neural.setText(tr('Нейросеть: {v:.0f}%', v=fraction * 100))
         if key == self._enhance_key():
             self.inspector.set_neural_state('running', progress=fraction, eta=eta)
             self.viewer.set_neural_badge(self._neural_text(fraction, eta), fraction)
 
     def _neural_done(self, key):
         self.neural_progress.pop(key, None)
-        self.status_neural.setText('Нейросеть: готово')
+        self.status_neural.setText(tr('Нейросеть: готово'))
         if key == self._enhance_key():
             self.viewer.set_neural_badge(None)
             self.viewer.clear_roi()
@@ -904,8 +964,8 @@ class MainWindow(QMainWindow):
     def _neural_failed(self, key, text):
         self.neural_progress.pop(key, None)
         self.viewer.set_neural_badge(None)
-        self.status_neural.setText('Нейросеть: ошибка')
-        self.toast.show_message('Нейросеть не смогла обработать снимок', text, 'danger')
+        self.status_neural.setText(tr('Нейросеть: ошибка'))
+        self.toast.show_message(tr('Нейросеть не смогла обработать снимок'), text, 'danger')
 
     def _zoom_changed(self, zoom):
         self.zoom_seg.setValue(zoom)
@@ -959,7 +1019,7 @@ class MainWindow(QMainWindow):
         self.view_seg.setEnabled(not on)
         if on:
             self.viewer.set_zoom('fit')
-            self.viewer.set_status('Подготавливаем кадрирование…')
+            self.viewer.set_status(tr('Подготавливаем кадрирование…'))
             self._request_crop_image()
             if self.scope != 'photo':
                 self.inspector.set_scope('photo')
@@ -1037,7 +1097,7 @@ class MainWindow(QMainWindow):
                     self.edits[str(p.path)] = e
                 self._sync_inspector()
                 self._after_change(True)
-                self.toast.show_message('Правки перенесены в пресет', 'Теперь они применяются ко всем фото. Сохраните пресет, чтобы не потерять.', 'info')
+                self.toast.show_message(tr('Правки перенесены в пресет'), tr('Теперь они применяются ко всем фото. Сохраните пресет, чтобы не потерять.'), 'info')
         elif name == 'copy_edits':
             self.copy_edits_to_selected()
 
@@ -1048,7 +1108,7 @@ class MainWindow(QMainWindow):
         source = self.edit() or Edit()
         rows = [r for r in self.strip.selected_rows() if r != self.current]
         if not rows:
-            self.toast.show_message('Выделите снимки в ленте', 'Ctrl или Shift + щелчок — затем повторите. Правки цвета и нейросети скопируются.', 'info')
+            self.toast.show_message(tr('Выделите снимки в ленте'), tr('Ctrl или Shift + щелчок — затем повторите. Правки цвета и нейросети скопируются.'), 'info')
             return
         for r in rows:
             target = self.photos[r]
@@ -1060,7 +1120,7 @@ class MainWindow(QMainWindow):
             else:
                 self.edits[str(target.path)] = e
         self._after_change(True)
-        self.toast.show_message(f'Правки скопированы: {len(rows)}', 'Кадр и поворот у каждого снимка свои.', 'success', timeout=3500)
+        self.toast.show_message(tr('Правки скопированы: {n}', n=len(rows)), tr('Кадр и поворот у каждого снимка свои.'), 'success', timeout=3500)
 
     # ================================================================= presets
     def _refresh_presets(self):
@@ -1107,24 +1167,24 @@ class MainWindow(QMainWindow):
             name = self.active_id.split(':', 1)[1]
             self.library.put(name, copy_settings(self.settings), describe(self.settings))
             self._refresh_presets()
-            self.toast.show_message(f'Пресет «{name}» сохранён', '', 'success', timeout=2500)
+            self.toast.show_message(tr('Пресет «{name}» сохранён', name=name), '', 'success', timeout=2500)
         except Exception as e:
             self.error(str(e))
 
     def save_preset_as(self):
         base = self.library.get(self.active_id)
-        suggestion = self.library.unique_name((base.name if base else 'Мой пресет') + (' — копия' if base and base.builtin else ''))
-        name, ok = QInputDialog.getText(self, 'Новый пресет', 'Название пресета:', text=suggestion)
+        suggestion = self.library.unique_name((base.name if base else tr('Мой пресет')) + (tr(' — копия') if base and base.builtin else ''))
+        name, ok = QInputDialog.getText(self, tr('Новый пресет'), tr('Название пресета:'), text=suggestion)
         if not ok or not name.strip():
             return
         name = name.strip()
-        if name in self.library.user and QMessageBox.question(self, 'Заменить?', f'Пресет «{name}» уже есть. Заменить?') != QMessageBox.StandardButton.Yes:
+        if name in self.library.user and QMessageBox.question(self, tr('Заменить?'), tr('Пресет «{name}» уже есть. Заменить?', name=name)) != QMessageBox.StandardButton.Yes:
             return
         try:
             self.active_id = self.library.put(name, copy_settings(self.settings), describe(self.settings))
             self._refresh_presets()
             self._commit()
-            self.toast.show_message(f'Пресет «{name}» сохранён и выбран', 'Он появился в разделе «Мои» слева.', 'success', timeout=3000)
+            self.toast.show_message(tr('Пресет «{name}» сохранён и выбран', name=name), tr('Он появился в разделе «Мои» слева.'), 'success', timeout=3000)
         except Exception as e:
             self.error(str(e))
 
@@ -1132,7 +1192,7 @@ class MainWindow(QMainWindow):
         preset = self.library.get(pid)
         if not preset:
             return
-        name = self.library.unique_name(preset.name + ' — копия')
+        name = self.library.unique_name(preset.name + tr(' — копия'))
         self.active_id = self.library.put(name, copy_settings(preset.settings), preset.note)
         self.settings = copy_settings(preset.settings)
         self._refresh_presets()
@@ -1143,7 +1203,7 @@ class MainWindow(QMainWindow):
         preset = self.library.get(pid)
         if not preset or preset.builtin:
             return
-        name, ok = QInputDialog.getText(self, 'Переименовать пресет', 'Новое название:', text=preset.name)
+        name, ok = QInputDialog.getText(self, tr('Переименовать пресет'), tr('Новое название:'), text=preset.name)
         if not ok or not name.strip() or name.strip() == preset.name:
             return
         try:
@@ -1158,7 +1218,7 @@ class MainWindow(QMainWindow):
         preset = self.library.get(pid)
         if not preset or preset.builtin:
             return
-        if QMessageBox.question(self, 'Удалить пресет?', f'Удалить «{preset.name}»? Это нельзя отменить.') != QMessageBox.StandardButton.Yes:
+        if QMessageBox.question(self, tr('Удалить пресет?'), tr('Удалить «{name}»? Это нельзя отменить.', name=preset.name)) != QMessageBox.StandardButton.Yes:
             return
         self.library.delete(pid)
         if self.active_id == pid:
@@ -1167,18 +1227,18 @@ class MainWindow(QMainWindow):
 
     def export_preset_file(self, pid):
         preset = self.library.get(pid) if pid else None
-        name = preset.name if preset else 'Свои настройки'
+        name = preset.name if preset else tr('Свои настройки')
         settings = preset.settings if preset and pid != self.active_id else self.settings
-        path, _ = QFileDialog.getSaveFileName(self, 'Экспорт пресета', f'{name}.printprep.json', 'Пресет Print Prep (*.json)')
+        path, _ = QFileDialog.getSaveFileName(self, tr('Экспорт пресета'), f'{name}.printprep.json', tr('Пресет Print Prep (*.json)'))
         if path:
             try:
                 export_preset(Path(path), name, settings, preset.note if preset else '')
-                self.toast.show_message('Пресет сохранён в файл', 'Передайте файл коллегам: «Импортировать пресет».', 'success', timeout=3000)
+                self.toast.show_message(tr('Пресет сохранён в файл'), tr('Передайте файл коллегам: «Импортировать пресет».'), 'success', timeout=3000)
             except Exception as e:
                 self.error(str(e))
 
     def import_preset_file(self):
-        path, _ = QFileDialog.getOpenFileName(self, 'Импорт пресета или рецепта', '', 'Print Prep (*.json)')
+        path, _ = QFileDialog.getOpenFileName(self, tr('Импорт пресета или рецепта'), '', 'Print Prep (*.json)')
         if not path:
             return
         try:
@@ -1196,18 +1256,18 @@ class MainWindow(QMainWindow):
             self._refresh_presets()
             self._sync_all()
             self._after_change(True)
-            self.toast.show_message(f'Импортирован «{name}»', f'Правок снимков сопоставлено: {matched}.' if edits else '', 'success')
+            self.toast.show_message(tr('Импортирован «{name}»', name=name), tr('Правок снимков сопоставлено: {matched}.', matched=matched) if edits else '', 'success')
         except Exception as e:
-            self.error(f'Не удалось импортировать: {e}')
+            self.error(tr('Не удалось импортировать: {e}', e=e))
 
     def export_recipe_file(self):
         if not self.folder:
             return
-        path, _ = QFileDialog.getSaveFileName(self, 'Экспорт рецепта', 'recipe.printprep.json', 'Рецепт Print Prep (*.json)')
+        path, _ = QFileDialog.getSaveFileName(self, tr('Экспорт рецепта'), 'recipe.printprep.json', tr('Рецепт Print Prep (*.json)'))
         if path:
             edits = {str(Path(k).relative_to(self.folder)): v for k, v in self.edits.items() if Path(k).is_relative_to(self.folder)}
             preset = self.library.get(self.active_id)
-            export_recipe(Path(path), preset.name if preset else 'Рецепт', self.settings, edits)
+            export_recipe(Path(path), preset.name if preset else tr('Рецепт'), self.settings, edits)
 
     # ================================================================= export
     def export(self):
@@ -1219,7 +1279,7 @@ class MainWindow(QMainWindow):
             self.error(str(e))
             return
         preset = self.library.get(self.active_id)
-        name = preset.name + (' (изменён)' if self._dirty() and preset else '') if preset else 'Свои настройки'
+        name = preset.name + (tr(' (изменён)') if self._dirty() and preset else '') if preset else tr('Свои настройки')
         self.export_job = ExportJob(self.folder, self.photos, self.settings, self.edits, name, self.cache, self)
         self.export_job.progress.connect(self._export_progress)
         self.export_job.file_progress.connect(self._export_file_progress)
@@ -1227,7 +1287,7 @@ class MainWindow(QMainWindow):
         self.export_job.failed.connect(self._export_failed)
         self.progress_bar.setRange(0, len(self.photos))
         self.progress_bar.setValue(0)
-        self.progress_text.setText(f'Готовим 0 из {len(self.photos)}…')
+        self.progress_text.setText(tr('Готовим 0 из {n}…', n=len(self.photos)))
         self.progress_box.show()
         self.stop_btn.setEnabled(True)
         self._update_export_button()
@@ -1238,17 +1298,17 @@ class MainWindow(QMainWindow):
     def _export_progress(self, done, total, row):
         self.progress_bar.setRange(0, total)
         self.progress_bar.setValue(done)
-        self.progress_text.setText(f'Готово {done} из {total} · {Path(row["source"]).name}')
+        self.progress_text.setText(tr('Готово {done} из {total} · {name}', done=done, total=total, name=Path(row["source"]).name))
 
     def _export_file_progress(self, path, fraction):
         if self.settings.neural:
-            self.progress_text.setText(f'Нейросеть: {Path(path).name} · {fraction * 100:.0f}%')
+            self.progress_text.setText(tr('Нейросеть: {name} · {v:.0f}%', name=Path(path).name, v=fraction * 100))
 
     def cancel_export(self):
         if self.export_job:
             self.export_job.cancel()
             self.stop_btn.setEnabled(False)
-            self.progress_text.setText('Останавливаем после текущих файлов…')
+            self.progress_text.setText(tr('Останавливаем после текущих файлов…'))
 
     def _export_done(self, output, report):
         self.progress_box.hide()
@@ -1257,26 +1317,60 @@ class MainWindow(QMainWindow):
         ok = sum(r['status'] == 'ok' for r in rows)
         bad = sum(r['status'] == 'error' for r in rows)
         skipped = sum(r['status'] == 'skipped' for r in rows)
-        title = ('Остановлено: ' if report['cancelled'] else 'Готово: ') + f'{ok} из {len(rows)} фото'
-        detail = output.name + (f' · ошибок {bad}' if bad else '') + (f' · пропущено {skipped}' if skipped else '')
+        title = (tr('Остановлено: ') if report['cancelled'] else tr('Готово: ')) + tr('{ok} из {n} фото', ok=ok, n=len(rows))
+        detail = output.name + (tr(' · ошибок {bad}', bad=bad) if bad else '') + (tr(' · пропущено {skipped}', skipped=skipped) if skipped else '')
         self.last_output = output
         self.toast.show_message(title, detail, 'success' if not bad else 'warning',
-                                actions=[('Открыть папку', lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(output))), 'Primary'),
-                                         ('Отчёт', lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(output / 'report.csv'))), None)],
+                                actions=[(tr('Открыть папку'), lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(output))), 'Primary'),
+                                         (tr('Отчёт'), lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(output / 'report.csv'))), None)],
                                 timeout=0)
 
     def _export_failed(self, text):
         self.progress_box.hide()
         self._update_export_button()
-        self.error(f'Экспорт не выполнен: {text}')
+        self.error(tr('Экспорт не выполнен: {text}', text=text))
+
+    # ================================================================= app settings, tour
+    def open_app_settings(self):
+        from .app_settings import AppSettingsDialog
+        dialog = AppSettingsDialog(self)
+        if dialog.exec() != AppSettingsDialog.DialogCode.Accepted:
+            return
+        changed = dialog.save()
+        if dialog.tutorial_requested:
+            self.store.setValue('tutorial_done', False)
+        if 'language' in changed:
+            # Some labels are built once at import; a quick restart switches every one of them.
+            from .app import restart
+            QTimer.singleShot(0, lambda: restart(self))
+        elif changed:
+            from .app import rebuild as rebuild_window
+            QTimer.singleShot(0, lambda: rebuild_window(self).maybe_show_tutorial())
+        elif dialog.tutorial_requested:
+            self.show_tutorial()
+
+    def maybe_show_tutorial(self):
+        if not self.store.value('tutorial_done', False, type=bool):
+            QTimer.singleShot(250, self.show_tutorial)
+
+    def show_tutorial(self):
+        if getattr(self, 'tour', None) is not None:
+            return
+        from .tutorial import Tour
+
+        def done():
+            self.tour = None
+            self.store.setValue('tutorial_done', True)
+        self.tour = Tour(self, done)
+        self.tour.start()
 
     # ================================================================= misc
     def error(self, text):
         QMessageBox.warning(self, 'Print Prep', text)
 
     def show_help(self):
-        QMessageBox.information(self, 'Print Prep · Справка', (
-            'КАК РАБОТАТЬ\n'
+        QMessageBox.information(self, tr('Print Prep · Справка'), (
+            tr('КАК РАБОТАТЬ\n'
             '1. Откройте или перетащите папку со снимками.\n'
             '2. Выберите пресет слева — он сразу применяется ко всем фото.\n'
             '3. Нажмите «Подготовить». Результат — в подпапке PrintPrep_… Оригиналы не меняются.\n\n'
@@ -1292,7 +1386,7 @@ class MainWindow(QMainWindow):
             'ПЕЧАТЬ\n'
             'Для лабораторий оставляйте sRGB и 300 PPI. ICC принтера — только если его требует печатник; '
             'не включайте управление цветом повторно в драйвере. Отпечаток темнее экрана — подберите '
-            '«Яркость отпечатка» по пробе и сохраните в пресет для своей бумаги.'))
+            '«Яркость отпечатка» по пробе и сохраните в пресет для своей бумаги.')))
 
     def dragEnterEvent(self, e):
         if e.mimeData().hasUrls() and any(Path(u.toLocalFile()).is_dir() for u in e.mimeData().urls()):

@@ -196,3 +196,51 @@ def test_assess_reports_ppi_and_upscale():
     info = assess((900, 600), s)
     assert info['upscale'] and info['ppi'] < 100 and any('PPI' in w for w in info['warnings'])
     assert assess((6000, 4000), Settings())['scale'] == 1
+
+
+def _skin_frame(rgb=(224, 172, 140)):
+    """Grey surround with one skin-coloured 'face' box in the middle (linear RGB)."""
+    from printprep.color import decode
+    img = np.full((200, 200, 3), .5, np.float32)
+    img[60:140, 60:140] = np.array(rgb, np.float32) / 255
+    return decode(img), [(.3, .3, .4, .4, .9)]
+
+
+def test_skin_guard_keeps_faces_natural():
+    lin, faces = _skin_frame()
+    gentle = np.array([1.03, 1.0, .97], np.float32)
+    assert auto.skin_guard(lin, gentle, faces) == (gentle, False) or not auto.skin_guard(lin, gentle, faces)[1]
+    green = np.array([.7, 1.25, .7], np.float32)            # would turn the face green
+    gains, acted = auto.skin_guard(lin, green, faces)
+    assert acted and np.abs(np.log(gains)).max() < np.abs(np.log(green)).max()
+    lo, hi = auto.SKIN_HUE
+    assert lo - 3 <= auto.skin_hue(lin * gains, faces) <= hi + 3
+    assert auto.skin_guard(lin, green, [])[1] is False      # no faces: no opinion
+
+
+def test_shadows_lift_only_where_they_hold_detail():
+    rng = np.random.default_rng(3)
+    flat = np.zeros((400, 600, 3), np.uint8)                # studio black backdrop, bright subject
+    flat[120:280, 220:380] = 200
+    textured = flat.copy()
+    textured[:, :200] = np.clip(18 + rng.normal(0, 9, (400, 200, 3)), 0, 255).astype(np.uint8)   # dark foliage
+    textured[:, 400:] = np.clip(16 + 14 * np.sin(np.arange(200) / 3)[None, :, None], 0, 255).astype(np.uint8)
+    assert auto.analyze(flat)['suggestions']['shadows'] == 0
+    assert auto.analyze(textured)['suggestions']['shadows'] > 0
+
+
+def test_underexposed_bright_scene_is_lifted_and_veil_removed():
+    from printprep.color import decode, encode
+    good = gradient_image(900, 600).astype(np.float32) / 255
+    dark = np.round(encode(decode(good) * .5) * 255).astype(np.uint8)
+    assert auto.analyze(dark)['suggestions']['exposure'] > .5
+    veiled = np.round(encode(decode(good) * .6 + .14) * 255).astype(np.uint8)
+    assert auto.analyze(veiled)['suggestions']['dehaze'] > 10
+    assert auto.analyze((good * 255).astype(np.uint8))['suggestions']['dehaze'] == 0
+
+
+def test_one_sided_histogram_is_only_nudged():
+    from printprep.color import decode, encode
+    pastel = np.clip(gradient_image(900, 600).astype(np.float32) / 255 * .55 + .45, 0, 1)   # no blacks, has whites
+    s = auto.analyze(np.round(pastel * 255).astype(np.uint8))['suggestions']
+    assert s['level_black'] < .06 and s['level_white'] == 1
