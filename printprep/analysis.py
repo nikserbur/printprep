@@ -10,10 +10,12 @@ shadows and highlights alike, while warm scene light (sunset, lamps) leaves shad
 neutral: only the first is corrected almost fully. Detected skin must stay in the
 natural hue range and must not turn grey. Black/white points follow the Lightroom
 habit of letting about 0.1 % of pixels clip, at full strength only when both ends of
-the histogram are empty; shadows are lifted only where they hold detail; strong veils go to the
-dark-channel dehaze. Exposure aims the log-average at middle grey, also lifts frames
-whose highlights stop far short of white, takes faces as a second opinion and never
-darkens bright scenes unless highlights really clip. Measured with tools/eval_auto.py.
+the histogram are empty; shadows are lifted and highlights pulled only where they hold
+detail; strong veils go to the dark-channel dehaze. Exposure aims the log-average at
+middle grey, also lifts frames whose highlights stop far short of white and never
+darkens bright scenes unless highlights really clip. Faces lift the frame only from
+backlight or deep shade, never because the skin is dark. Measured with
+tools/eval_auto.py.
 """
 from __future__ import annotations
 
@@ -26,6 +28,10 @@ from .i18n import tr
 
 ANALYSIS_EDGE = 768
 VEIL_GAIN = 450
+FACE_DARKEST = .03        # linear luminance of the darkest skin in good light
+FACE_LIGHTEST = .42       # ... and of the lightest; no face is pushed past it
+FACE_BACKLIT = .25        # a face this far below the scene's key is in backlight or deep shade
+FACE_LIT = .16            # a face this bright is well lit whatever the skin: it holds the exposure
 
 
 def _proxy_float(proxy):
@@ -287,8 +293,8 @@ def estimate_noise(full):
     return float(math.sqrt(math.pi / 2) * response[valid].mean() / 6)
 
 
-def shadow_detail(tone, mask):
-    """0..1: how much real texture the deep shadows carry (local contrast above the noise floor)."""
+def tone_detail(tone, mask):
+    """0..1: how much real texture a tonal zone carries (local contrast above the noise floor)."""
     import cv2
     if mask.mean() < .02:
         return 0.
@@ -297,6 +303,25 @@ def shadow_detail(tone, mask):
     std = np.sqrt(np.maximum(cv2.blur(t * t, (5, 5)) - mean * mean, 0))
     level = float(np.median(std[mask]))
     return float(np.clip((level - .006) / .014, 0, 1))
+
+
+def face_exposure(ev, face, key):
+    """Exposure in EV with the faces' opinion: `face` is their linear luminance, `key` the scene's.
+
+    Luminance alone cannot tell dark skin in good light from light skin in shadow, and
+    lifting every dark face to a light-skin level washes out dark skin. So a face lifts the
+    frame only when it is darker than any skin in good light or far darker than its own
+    scene (backlight, deep shade). A face as bright as light skin is lit well whatever its
+    tone and holds the exposure (flash at night, a flat frame); in between it has no say.
+    A face brighter than the lightest skin pulls the exposure down, and none is pushed past it."""
+    floor = max(FACE_DARKEST, FACE_BACKLIT * key)
+    if face < floor:
+        ev = max(ev, .45 * ev + .55 * float(np.clip(math.log2(floor / max(face, 1e-4)), 0, 1.)))
+    elif face > FACE_LIGHTEST:
+        ev = .45 * ev + .55 * float(np.clip(math.log2(FACE_LIGHTEST / face), -.6, 0))
+    else:
+        ev *= 1 - .55 * float(np.clip(math.log2(2 * face / FACE_LIT), 0, 1))
+    return min(ev, max(0., math.log2(FACE_LIGHTEST / max(face, 1e-4))))
 
 
 def saliency_map(enc):
@@ -341,7 +366,7 @@ def analyze(proxy, source_long=None):
     balanced = lin * wb
     y = balanced @ LUMA
 
-    # Exposure: log-average key toward middle grey, faces as a second opinion.
+    # Exposure: log-average key toward middle grey, faces as a second opinion on the light.
     valid = (y > .002) & (y < .97)
     sample = y[valid] if valid.sum() > 100 else y.ravel()
     key = float(np.exp(np.log(np.maximum(sample, 1e-4)).mean()))
@@ -370,9 +395,7 @@ def analyze(proxy, source_long=None):
             if region.size:
                 lums.append(float(np.median(region)))
         if lums:
-            yf = float(np.median(lums))
-            target = min(.42, max(.16, yf))      # respect any natural skin tone inside a broad range
-            ev = .45 * ev + .55 * float(np.clip(math.log2(target / max(yf, 1e-4)), -.6, 1.0))
+            ev = face_exposure(ev, float(np.median(lums)), key)
             notes.append(tr('Лица: {n}', n=len(faces)))
     ev = float(np.clip(ev, -1.2, 1.5))
     if abs(ev) >= .1:
@@ -397,9 +420,12 @@ def analyze(proxy, source_long=None):
     # Lift shadows only where they hold detail: a flat black backdrop or night sky stays black.
     deep_mask = stretched < .12
     deep = float((stretched < .06).mean())
-    texture = shadow_detail(stretched, deep_mask)
+    texture = tone_detail(stretched, deep_mask)
     s['shadows'] = float(np.clip((deep - .2) * 120, 0, 35)) * texture if median < .3 else 0.
-    s['highlights'] = -float(np.clip((float((stretched > .97).mean()) - .02) * 500, 0, 45))
+    # Likewise pull highlights only where they hold detail: darkening a white backdrop or a
+    # blown sky recovers nothing and only turns white into grey.
+    clipped_share = float((stretched > .97).mean())
+    s['highlights'] = -float(np.clip((clipped_share - .02) * 500, 0, 45)) * tone_detail(stretched, stretched > .9)
 
     lab = to_oklab(np.clip(balanced * 2 ** ev, 0, 1))
     chroma = np.hypot(lab[..., 1], lab[..., 2])

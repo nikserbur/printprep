@@ -250,6 +250,27 @@ def test_underexposed_bright_scene_is_lifted_and_veil_removed():
     assert auto.analyze((good * 255).astype(np.uint8))['suggestions']['dehaze'] == 0
 
 
+def test_faces_lift_backlight_not_dark_skin():
+    assert auto.face_exposure(0., .045, .1) == 0              # dark skin in good light is not lifted...
+    assert auto.face_exposure(1., .045, .1) == 1              # ...nor holds back the scene's own lift
+    assert auto.face_exposure(0., .04, .35) > .3              # a face far below its bright scene: backlight
+    assert auto.face_exposure(0., .01, .03) > .3              # darker than any skin in good light
+    assert auto.face_exposure(1., .3, .2) == pytest.approx(.45)   # a well-lit face holds the exposure
+    assert auto.face_exposure(1.5, .35, .02) == pytest.approx(np.log2(.42 / .35))   # never past light skin
+    assert auto.face_exposure(0., .7, .3) < 0                 # an overexposed face pulls the frame down
+
+
+def test_highlights_are_pulled_only_where_they_hold_detail():
+    rng = np.random.default_rng(5)
+    frame = np.clip(rng.normal(110, 30, (400, 600)), 0, 255)
+    frame[:, :120] = 255                                      # flat white backdrop: nothing to recover
+    flat = np.repeat(frame[..., None], 3, axis=2).astype(np.uint8)
+    assert auto.analyze(flat)['suggestions']['highlights'] == 0
+    frame[:, :120] = rng.uniform(225, 255, (400, 120))        # bright clouds with texture
+    textured = np.repeat(frame[..., None], 3, axis=2).astype(np.uint8)
+    assert auto.analyze(textured)['suggestions']['highlights'] < -5
+
+
 def test_one_sided_histogram_is_only_nudged():
     from printprep.color import decode, encode
     pastel = np.clip(gradient_image(900, 600).astype(np.float32) / 255 * .55 + .45, 0, 1)   # no blacks, has whites
