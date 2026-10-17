@@ -25,7 +25,7 @@ def test_print_size_pixels_follow_ppi():
     (dict(quality=101), 'Качество'),
     (dict(dpi=10), 'PPI'),
     (dict(output_space='ICC', icc_path=''), 'ICC'),
-    (dict(upscaler='magic'), 'нейросеть'),
+    (dict(neural='yes'), 'нейросети'),
 ])
 def test_validation_messages(change, message):
     with pytest.raises(ValueError, match=message):
@@ -55,7 +55,7 @@ def test_migrates_v1_settings():
                upscaler='fsrcnn', neural_strength=.6)
     s = Settings.from_dict(old)
     s.validate(check_icc=False)
-    assert s.sharpen == 'glossy' and s.upscaler == 'fsrcnn' and s.neural_strength == 60
+    assert s.sharpen == 'glossy' and s.neural and s.neural_strength == 60
     assert s.adjust.shadows == 20 and s.adjust.highlights == -10 and s.adjust.auto
 
 
@@ -79,3 +79,12 @@ def test_combined_adjust_clamps_to_slider_range():
     s = Settings(adjust=Adjust(shadows=90))
     a = combined_adjust(s, Edit(offsets={'shadows': 50, 'exposure': -1}))
     assert a.shadows == ADJUST_RANGES['shadows'][2] and a.exposure == -1
+
+
+def test_reads_2_0_upscaler_choice():
+    data = Settings().to_dict()
+    data.pop('neural')
+    data['upscaler'] = 'esrgan'
+    assert Settings.from_dict(data).neural
+    data['upscaler'] = 'off'
+    assert not Settings.from_dict(data).neural

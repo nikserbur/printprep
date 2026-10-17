@@ -69,15 +69,15 @@ def photo_folder(tmp_path):
 def wait_idle(app, window, timeout=60):
     import time
     end = time.monotonic() + timeout
+    quiet = 0
     while time.monotonic() < end:
         app.processEvents()
         scanning = window.scan_worker is not None and window.scan_worker.is_alive()
         exporting = window.export_job is not None and window.export_job.running()
-        if not scanning and not exporting and window.service.is_idle() and not window.preview_timer.isActive():
-            for _ in range(5):
-                app.processEvents()
-                time.sleep(.01)
-            if window.service.is_idle() and not window.preview_timer.isActive():
-                return
+        idle = not scanning and not exporting and window.service.is_idle() and not window.preview_timer.isActive()
+        # Results are queued signals: stay idle across several event-loop passes before trusting it.
+        quiet = quiet + 1 if idle else 0
+        if quiet >= 6:
+            return
         time.sleep(.01)
     raise AssertionError('UI did not become idle')

@@ -18,9 +18,9 @@ if errorlevel 1 goto :fail
 set QT_QPA_PLATFORM=offscreen
 .venv-build\Scripts\python.exe -m pytest -q
 if errorlevel 1 goto :fail
-.venv-build\Scripts\python.exe -m PyInstaller --noconfirm --clean --onefile --windowed --name PrintPrep --version-file assets\windows_version.txt --icon assets\printprep.ico --add-data "assets;assets" --collect-all PIL --exclude-module PySide6.QtWebEngineCore --exclude-module PySide6.QtWebEngineWidgets print_prep.py
+.venv-build\Scripts\python.exe -m PyInstaller --noconfirm --clean printprep.spec
 if errorlevel 1 goto :fail
-powershell -NoProfile -Command "$p = Start-Process -FilePath 'dist\PrintPrep.exe' -ArgumentList '--self-test' -Wait -PassThru; exit $p.ExitCode"
+powershell -NoProfile -Command "$p = Start-Process -FilePath 'dist\PrintPrep\PrintPrep.exe' -ArgumentList '--self-test' -Wait -PassThru; exit $p.ExitCode"
 if errorlevel 1 goto :fail
 set QT_QPA_PLATFORM=
 copy /y README.txt dist\README.txt >nul

@@ -1,6 +1,7 @@
 import csv
 import hashlib
 import threading
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -19,42 +20,53 @@ from conftest import gradient_image
 def test_bundled_models_match_checksums():
     for name, digest in neural.CHECKSUMS.items():
         assert hashlib.sha256((neural.MODELS / name).read_bytes()).hexdigest() == digest
-    assert neural.available('fsrcnn') and neural.available('esrgan')
+    assert neural.available()
 
 
-@pytest.mark.parametrize('kind, factor', [('fsrcnn', 2), ('esrgan', 4)])
-def test_upscale_shape_progress_and_tiling(kind, factor):
+def test_upscale_shape_progress_and_tiling():
     rng = np.random.default_rng(0)
     img = np.clip(gradient_image(150, 110).astype(np.float32) / 255 + rng.normal(0, .01, (110, 150, 3)), 0, 1).astype(np.float32)
     seen = []
-    out = neural.upscale(img, kind, progress=seen.append)
-    assert out.shape == (110 * factor, 150 * factor, 3) and seen[-1] == 1
-    # Tiled result must match an untiled run closely (no visible seams).
-    spec = dict(neural.UPSCALERS[kind])
+    out = neural.upscale(img, progress=lambda f, eta: seen.append(f))
+    assert out.shape == (440, 600, 3) and seen[-1] == 1
+    old = neural.TILE
     try:
-        neural.UPSCALERS[kind]['tile'] = 64
-        tiled = neural.upscale(img, kind)
+        neural.TILE = 64          # many tiles must match one big tile closely (no seams)
+        tiled = neural.upscale(img)
     finally:
-        neural.UPSCALERS[kind].update(spec)
+        neural.TILE = old
     assert np.abs(tiled - out).max() < .03
+    half = neural.upscale(img, store_factor=2)
+    assert half.shape == (220, 300, 3)
 
 
 def test_upscale_can_be_cancelled():
     img = np.zeros((600, 600, 3), np.float32)
     with pytest.raises(neural.Cancelled):
-        neural.upscale(img, 'esrgan', cancel=lambda: True)
+        neural.upscale(img, cancel=lambda: True)
 
 
-def test_neural_render_only_when_enlarging(tmp_path):
+def test_enhancement_is_cached_and_only_used_when_enlarging(tmp_path):
+    from printprep.pipeline import enhanced, neural_status, plan
     Image.fromarray(gradient_image(200, 150)).save(tmp_path / 's.png')
     src = Source.open(inspect(tmp_path / 's.png'))
-    s = Settings(size_mode='long_edge', long_edge=400, upscaler='fsrcnn')
-    r = render(src, s, Edit())
-    assert r.neural and r.image.shape[:2] == (300, 400)
-    r = render(src, Settings(size_mode='long_edge', long_edge=100, upscaler='fsrcnn'), Edit())
-    assert not r.neural and any('не нужна' in n for n in r.notes)
-    r = render(src, Settings(size_mode='long_edge', long_edge=400, upscaler='fsrcnn'), Edit(neural=False))
-    assert not r.neural
+    s = Settings(size_mode='long_edge', long_edge=600, neural=True)
+    applies, reason = neural_status(src, s, Edit(), plan(src, s, Edit()))
+    assert applies and not reason
+    neural.CACHE.clear()
+    assert enhanced(src, s, Edit(), compute=False) is None
+    entry = enhanced(src, s, Edit())
+    assert entry['factor'] == 4 and entry['full'].shape == (600, 800, 3)
+    assert enhanced(src, s, Edit(), compute=False) is entry
+    r = render(src, s, Edit(), enhanced_source=entry)
+    assert r.neural and r.image.shape[:2] == (450, 600)
+    plain = render(src, s, Edit())
+    assert np.abs(r.image - plain.image).mean() > .002          # the network visibly changes the image
+    weak = render(src, replace(s, neural_strength=0), Edit(), enhanced_source=entry)
+    assert np.abs(weak.image - plain.image).max() < 2 / 255       # strength 0 equals plain
+    small = Settings(size_mode='long_edge', long_edge=220, neural=True)
+    assert not neural_status(src, small, Edit(), plan(src, small, Edit()))[0]
+    assert not neural_status(src, s, Edit(neural=False), plan(src, s, Edit()))[0]
 
 
 def test_face_detector_runs_offline():
@@ -135,7 +147,7 @@ def test_export_cancel_keeps_report(photo_folder):
 
 def test_worker_count_is_bounded(photo_folder):
     photos = [inspect(p) for p in photo_folder.iterdir()]
-    assert worker_count(Settings(upscaler='esrgan'), photos) == 1
+    assert worker_count(Settings(neural=True), photos) == 1
     assert 1 <= worker_count(Settings(), photos) <= len(photos)
 
 

@@ -145,7 +145,7 @@ def describe(s: Settings):
     parts = [size, s.format + (' 16 бит' if s.bit_depth == 16 else '')]
     if s.adjust.auto:
         parts.append(f'авто {s.adjust.auto_strength:.0f}%')
-    if s.upscaler != 'off':
+    if s.neural:
         parts.append('нейросеть')
     return ' · '.join(parts)
 

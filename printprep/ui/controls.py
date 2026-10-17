@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import (QEasingCurve, QPointF, QPropertyAnimation, QRectF, QSize, Qt, QTimer, Signal,
+import numpy as np
+from PySide6.QtCore import (QEasingCurve, QPoint, QPointF, QPropertyAnimation, QRectF, QSize, Qt, QTimer, Signal,
                             Property)
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QLinearGradient, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import (QAbstractButton, QButtonGroup, QFrame, QHBoxLayout, QLabel, QLineEdit,
+from PySide6.QtWidgets import (QAbstractButton, QButtonGroup, QFrame, QHBoxLayout, QLabel, QLineEdit, QMenu,
                                QPushButton, QSizePolicy, QToolButton, QVBoxLayout, QWidget)
 
 from . import icons
@@ -193,7 +194,6 @@ class ParamSlider(QWidget):
             return
         self.pressed.emit()
         target = self.baseline if self.baseline is not None else self.default
-        self.setValue(target, emit=True)
         self._value = target
         self.update()
         self.valueChanged.emit(target)
@@ -379,41 +379,84 @@ class Segmented(QFrame):
 
 
 # ---------------------------------------------------------------- section
+class IconChip(QLabel):
+    """Rounded tinted square with an icon in the section accent colour."""
+
+    def __init__(self, icon_name, accent, size=24, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(size, size)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setPixmap(icons.pixmap(icon_name, accent, round(size * .62)))
+        c = QColor(accent)
+        self.setStyleSheet(f'background: rgba({c.red()},{c.green()},{c.blue()},0.16); border-radius: 7px;')
+
+
+class SectionHeader(QWidget):
+    clicked = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setMinimumHeight(46)
+        self._hover = False
+
+    def enterEvent(self, e):
+        self._hover = True
+        self.update()
+
+    def leaveEvent(self, e):
+        self._hover = False
+        self.update()
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton and self.rect().contains(e.position().toPoint()):
+            self.clicked.emit()
+
+    def paintEvent(self, _):
+        if self._hover:
+            p = QPainter(self)
+            p.fillRect(self.rect(), QColor(T['hover']))
+
+
 class Section(QWidget):
-    """Collapsible inspector section with optional header widgets."""
+    """Collapsible inspector section: accent icon chip, title, optional header widgets."""
     toggled = Signal(bool)
 
-    def __init__(self, title, icon_name=None, opened=True, parent=None):
+    def __init__(self, title, icon_name=None, opened=True, parent=None, accent=None, subtitle=''):
         super().__init__(parent)
         self.title = title
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
-        self.header = QPushButton()
-        self.header.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.header.setCheckable(True)
-        self.header.setChecked(opened)
-        self.header.setStyleSheet(f'''
-            QPushButton {{ background: transparent; border: none; border-radius: 0; text-align: left;
-                          padding: 10px 14px 10px 36px; font-weight: 600; color: {T["text"]}; min-height: 22px; }}
-            QPushButton:hover {{ background: {T["hover"]}; }}''')
-        self.header.setText(title)
-        self.header.toggled.connect(self.set_open)
-        self.icon_name = icon_name
+        self.header = SectionHeader()
         head = QHBoxLayout(self.header)
-        head.setContentsMargins(10, 0, 10, 0)
-        head.setSpacing(6)
-        self.chevron = QLabel()
-        self.chevron.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        head.addWidget(self.chevron)
-        head.addStretch()
+        head.setContentsMargins(14, 8, 10, 8)
+        head.setSpacing(10)
+        if icon_name:
+            head.addWidget(IconChip(icon_name, accent or T['accent']))
+        texts = QVBoxLayout()
+        texts.setSpacing(0)
+        self.title_label = QLabel(title)
+        self.title_label.setStyleSheet(f'font-weight: 600; font-size: 13px; color: {T["text"]};')
+        texts.addWidget(self.title_label)
+        self.subtitle = QLabel(subtitle)
+        self.subtitle.setStyleSheet(f'color: {T["text3"]}; font-size: 11px;')
+        self.subtitle.setVisible(bool(subtitle))
+        texts.addWidget(self.subtitle)
+        head.addLayout(texts, 1)
         self.extra = QHBoxLayout()
-        self.extra.setSpacing(4)
+        self.extra.setSpacing(2)
         head.addLayout(self.extra)
+        self.chevron = QLabel()
+        self.chevron.setFixedWidth(16)
+        head.addWidget(self.chevron)
+        for w in (self.title_label, self.subtitle, self.chevron):
+            w.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.header.clicked.connect(lambda: self.set_open(not self.is_open()))
         outer.addWidget(self.header)
         self.body = QWidget()
         self.layout = QVBoxLayout(self.body)
-        self.layout.setContentsMargins(14, 2, 14, 14)
+        self.layout.setContentsMargins(14, 2, 14, 16)
         self.layout.setSpacing(6)
         outer.addWidget(self.body)
         outer.addWidget(hline())
@@ -422,10 +465,11 @@ class Section(QWidget):
     def add_header_widget(self, widget):
         self.extra.addWidget(widget)
 
+    def set_subtitle(self, text):
+        self.subtitle.setText(text)
+        self.subtitle.setVisible(bool(text))
+
     def set_open(self, opened):
-        self.header.blockSignals(True)
-        self.header.setChecked(opened)
-        self.header.blockSignals(False)
         self.body.setVisible(opened)
         self.chevron.setPixmap(icons.pixmap('chevron_down' if opened else 'chevron_right', T['text3'], 14))
         self.toggled.emit(opened)
@@ -434,14 +478,160 @@ class Section(QWidget):
         return self.body.isVisible()
 
 
+class Dropdown(QPushButton):
+    """Select-like button that opens a styled menu. Menus are always placed on screen."""
+    changed = Signal(object)
+
+    def __init__(self, items=(), parent=None, placeholder='Выберите…'):
+        super().__init__(parent)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setObjectName('Dropdown')
+        self.placeholder = placeholder
+        self.items = []
+        self._value = None
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setMinimumWidth(60)
+        self.clicked.connect(self._open)
+        self.set_items(items)
+
+    def set_items(self, items):
+        """items: (text, value) or (text, value, hint); None inserts a separator; str a section title."""
+        self.items = list(items)
+        self._sync()
+
+    def value(self):
+        return self._value
+
+    def setValue(self, value):
+        self._value = value
+        self._sync()
+
+    def _text_for(self, value):
+        for item in self.items:
+            if isinstance(item, tuple) and item[1] == value:
+                return item[0]
+        return None
+
+    def _sync(self):
+        text = self._text_for(self._value)
+        self.setText(text if text is not None else self.placeholder)
+        self.setToolTip(text or '')
+
+    def sizeHint(self):
+        hint = super().sizeHint()
+        return QSize(min(hint.width(), 240), hint.height())
+
+    def minimumSizeHint(self):
+        return QSize(60, super().minimumSizeHint().height())
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        p = QPainter(self)
+        pm = icons.pixmap('chevron_down', T['text2'] if self.isEnabled() else '#50535b', 12)
+        p.drawPixmap(self.width() - 24, (self.height() - 12) // 2, pm)
+
+    def _open(self):
+        menu = QMenu(self)
+        menu.setMinimumWidth(self.width())
+        group = []
+        for item in self.items:
+            if item is None:
+                menu.addSeparator()
+            elif isinstance(item, str):
+                title = menu.addAction(item.upper())
+                title.setEnabled(False)
+                f = title.font()
+                f.setPointSizeF(7.5)
+                f.setBold(True)
+                title.setFont(f)
+            else:
+                text, value = item[0], item[1]
+                action = menu.addAction(text)
+                action.setCheckable(True)
+                action.setChecked(value == self._value)
+                if len(item) > 2 and item[2]:
+                    action.setToolTip(item[2])
+                action.triggered.connect(lambda _=False, v=value: self._choose(v))
+                group.append(action)
+        menu.setToolTipsVisible(True)
+        menu.exec(self.mapToGlobal(self.rect().bottomLeft()) + QPoint(0, 4))
+
+    def _choose(self, value):
+        changed = value != self._value
+        self._value = value
+        self._sync()
+        if changed:
+            self.changed.emit(value)
+
+
+class Histogram(QWidget):
+    """RGB + luminance histogram with shadow/highlight clipping markers (like Lightroom)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(96)
+        self.data = None
+        self.setToolTip('Гистограмма результата. Треугольники загораются, если тени или света обрезаются.')
+
+    def set_data(self, data):
+        self.data = data
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(self.rect()).adjusted(.5, .5, -.5, -.5)
+        path = QPainterPath()
+        path.addRoundedRect(r, 8, 8)
+        p.fillPath(path, QColor('#0d0e10'))
+        p.setPen(QPen(QColor(T['border']), 1))
+        p.drawPath(path)
+        p.setClipPath(path)
+        p.setPen(QPen(QColor(255, 255, 255, 14), 1))
+        for i in (1, 2, 3):
+            x = r.left() + r.width() * i / 4
+            p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()))
+        if not self.data:
+            p.setPen(QColor(T['text3']))
+            p.drawText(r, Qt.AlignmentFlag.AlignCenter, 'Гистограмма появится с первым снимком')
+            return
+        chans = self.data['channels']
+        peak = max(1e-6, max(float(np.percentile(c[2:-2], 99.5)) for c in chans[:3]) * 1.15)
+        colors = (QColor(255, 80, 80, 110), QColor(80, 220, 120, 110), QColor(90, 140, 255, 120))
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
+        for c, color_ in zip(chans[:3], colors):
+            poly = QPainterPath()
+            poly.moveTo(r.left(), r.bottom())
+            for i in range(256):
+                poly.lineTo(r.left() + r.width() * i / 255, r.bottom() - min(1., c[i] / peak) * (r.height() - 6))
+            poly.lineTo(r.right(), r.bottom())
+            p.fillPath(poly, color_)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+        line = QPainterPath()
+        lum = chans[3]
+        for i in range(256):
+            pt = QPointF(r.left() + r.width() * i / 255, r.bottom() - min(1., lum[i] / peak) * (r.height() - 6))
+            line.moveTo(pt) if i == 0 else line.lineTo(pt)
+        p.setPen(QPen(QColor(255, 255, 255, 120), 1.2))
+        p.drawPath(line)
+        for left, value in ((True, self.data['low']), (False, self.data['high'])):
+            on = value > .005
+            tri = QPainterPath()
+            x = r.left() + 8 if left else r.right() - 8
+            tri.moveTo(x, r.top() + 6)
+            tri.lineTo(x + (8 if left else -8), r.top() + 6)
+            tri.lineTo(x, r.top() + 14)
+            tri.closeSubpath()
+            p.fillPath(tri, QColor('#5b9dff' if left and on else '#ff5d5d' if on else '#3a3c43'))
 # ---------------------------------------------------------------- chips
 class Chip(QLabel):
     STYLES = {
         'neutral': (T['raised'], T['text2'], T['border_strong']),
-        'accent': ('rgba(76,141,255,0.15)', '#8fb6ff', 'rgba(76,141,255,0.35)'),
+        'accent': ('rgba(61,139,253,0.15)', '#8fb6ff', 'rgba(61,139,253,0.35)'),
         'warning': ('rgba(242,177,74,0.14)', '#f5c475', 'rgba(242,177,74,0.35)'),
         'success': ('rgba(60,207,138,0.14)', '#6fdca8', 'rgba(60,207,138,0.35)'),
-        'danger': ('rgba(255,107,107,0.14)', '#ff9a9a', 'rgba(255,107,107,0.35)'),
+        'danger': ('rgba(255,93,93,0.14)', '#ff9a9a', 'rgba(255,93,93,0.35)'),
+        'neural': ('rgba(155,107,255,0.16)', '#c9b1ff', 'rgba(155,107,255,0.4)'),
     }
 
     def __init__(self, text='', kind='neutral', parent=None):
@@ -463,7 +653,7 @@ class ChipToggle(QPushButton):
             QPushButton {{ background: {T["raised"]}; color: {T["text2"]}; border: 1px solid {T["border_strong"]};
                           border-radius: 12px; padding: 3px 10px; min-height: 16px; font-size: 12px; }}
             QPushButton:hover {{ color: {T["text"]}; }}
-            QPushButton:checked {{ background: rgba(76,141,255,0.16); color: #9fc0ff; border-color: rgba(76,141,255,0.45); }}
+            QPushButton:checked {{ background: rgba(61,139,253,0.16); color: #9fc0ff; border-color: rgba(61,139,253,0.45); }}
             QPushButton:disabled {{ color: #50535b; }}''')
 
 

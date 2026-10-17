@@ -13,9 +13,6 @@ Qt wheels used here omit license files, so their primary license texts are
 retained explicitly. This directory is not a claim of a complete legal audit
 of all Qt build configurations or external printer profiles.
 
-- FSRCNN-Apache-2.0.txt:
-  https://github.com/Saafke/FSRCNN_Tensorflow/blob/master/LICENSE
-  Pretrained weights and attribution: assets/models/README.md.
 
 - Real-ESRGAN-BSD-3-Clause.txt:
   https://github.com/xinntao/Real-ESRGAN/blob/master/LICENSE (downloaded 2026-10-16)

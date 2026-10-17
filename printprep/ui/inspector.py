@@ -1,26 +1,26 @@
-"""Right panel: batch preset settings and per-photo adjustments, applied live."""
+"""Right panel: preset card, histogram, batch preset settings and per-photo adjustments."""
 from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, Qt, Signal
-from PySide6.QtWidgets import (QComboBox, QDoubleSpinBox, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QPushButton,
-                               QScrollArea, QSpinBox, QStackedWidget, QVBoxLayout, QWidget)
+from PySide6.QtCore import QSettings, QSize, Qt, Signal
+from PySide6.QtWidgets import (QDoubleSpinBox, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QMenu, QPushButton,
+                               QScrollArea, QSpinBox, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
-from ..model import ADJUST_RANGES, LOOKS, PAPER_SIZES, Edit, Settings, mm_to_px
+from ..model import ADJUST_RANGES, LOOKS, NEURAL_MIN_SCALE, PAPER_SIZES, Edit, Settings, mm_to_px
 from . import icons
-from .controls import (Chip, ChipToggle, FlowRow, ParamSlider, Section, Segmented, Switch, button, hline, label,
-                       tool)
-from .theme import T
+from .controls import (Chip, ChipToggle, Dropdown, FlowRow, Histogram, ParamSlider, Section, Segmented, Switch, button,
+                       hline, label, tool)
+from .theme import ACCENTS, T, rgba
 
 GRADIENTS = {'temperature': ['#3d7bff', '#9aa3b5', '#ffc23d'], 'tint': ['#3fbf5f', '#a3a3ab', '#d24fc6']}
 LIGHT = ('exposure', 'contrast', 'highlights', 'shadows', 'whites', 'blacks')
 COLOR = ('temperature', 'tint', 'vibrance', 'saturation')
 DETAIL = ('clarity', 'dehaze', 'denoise', 'color_denoise')
-PIXEL_PRESETS = [('4K UHD · 3840 × 2160', 3840, 2160), ('Full HD · 1920 × 1080', 1920, 1080),
-                 ('8K · 7680 × 4320', 7680, 4320), ('Instagram 4:5 · 1080 × 1350', 1080, 1350),
-                 ('Квадрат · 2048 × 2048', 2048, 2048), ('A4 при 300 PPI · 2480 × 3508', 2480, 3508)]
+PIXEL_PRESETS = [('4K UHD · 3840 × 2160', (3840, 2160)), ('Full HD · 1920 × 1080', (1920, 1080)),
+                 ('8K · 7680 × 4320', (7680, 4320)), ('Instagram 4:5 · 1080 × 1350', (1080, 1350)),
+                 ('Квадрат · 2048 × 2048', (2048, 2048)), ('A4 при 300 PPI · 2480 × 3508', (2480, 3508))]
 ASPECTS = [('Как у снимка', None), ('1:1', 1.0), ('4:5', .8), ('3:2', 1.5), ('16:9', 16 / 9)]
 
 
@@ -37,25 +37,13 @@ def _spin(low, high, suffix='', decimals=0, step=1):
     return w
 
 
-def _combo(items):
-    c = QComboBox()
-    for text, data in items:
-        c.addItem(text, data)
-    c.wheelEvent = lambda e: e.ignore()
-    # Shrink with the panel instead of forcing it wider than the window; the popup stays wide.
-    c.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-    c.setMinimumContentsLength(6)
-    c.view().setMinimumWidth(max(220, c.view().sizeHintForColumn(0) + 32))
-    return c
-
-
 def _row(title, widget, hint=None):
     box = QWidget()
     lay = QHBoxLayout(box)
     lay.setContentsMargins(8, 0, 0, 0)
     lay.setSpacing(8)
     t = label(title, 'Muted')
-    t.setMinimumWidth(86)
+    t.setFixedWidth(92)
     if hint:
         t.setToolTip(hint)
         widget.setToolTip(hint)
@@ -72,17 +60,24 @@ def _scroll(widget):
     return area
 
 
+def _note(text):
+    w = label(text, 'Hint', wrap=True)
+    w.setContentsMargins(8, 0, 0, 0)
+    return w
+
+
 class Inspector(QWidget):
     settingsEdited = Signal(object, bool)      # Settings, commit
     editEdited = Signal(object, bool)          # Edit, commit
     action = Signal(str)
+    presetAction = Signal(str)
     scopeChanged = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName('RightPanel')
-        self.setMinimumWidth(330)
-        self.setMaximumWidth(420)
+        self.setMinimumWidth(340)
+        self.setMaximumWidth(440)
         self.settings = Settings()
         self.edit = Edit()
         self.photo = None
@@ -92,17 +87,19 @@ class Inspector(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
+        outer.addWidget(self._preset_card())
+        outer.addWidget(hline())
         top = QWidget()
         tl = QVBoxLayout(top)
-        tl.setContentsMargins(14, 12, 14, 10)
+        tl.setContentsMargins(14, 10, 14, 10)
         tl.setSpacing(8)
+        self.histogram = Histogram()
+        tl.addWidget(self.histogram)
         self.scope_switch = Segmented([('Все фото', 'batch', 'Настройки пресета — для всей папки'),
                                        ('Этот снимок', 'photo', 'Правки только выбранного снимка поверх пресета')])
         self.scope_switch.setValue('batch')
         self.scope_switch.changed.connect(self.set_scope)
         tl.addWidget(self.scope_switch)
-        self.scope_hint = label('', 'Hint', wrap=True)
-        tl.addWidget(self.scope_hint)
         outer.addWidget(top)
         outer.addWidget(hline())
         self.pages = QStackedWidget()
@@ -113,10 +110,85 @@ class Inspector(QWidget):
         self._build_photo()
         self.set_scope('batch', emit=False)
 
+    # ------------------------------------------------------------ preset card
+    def _preset_card(self):
+        card = QWidget()
+        card.setObjectName('PresetCard')
+        card.setStyleSheet(f'#PresetCard {{ background: {T["panel"]}; }}')
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(14, 12, 12, 12)
+        lay.setSpacing(6)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        texts = QVBoxLayout()
+        texts.setSpacing(1)
+        texts.addWidget(label('ПРЕСЕТ ДЛЯ ВСЕХ ФОТО', 'Eyebrow'))
+        self.preset_name = label('Свои настройки', None)
+        self.preset_name.setStyleSheet(f'font-size: 15px; font-weight: 650; color: {T["text"]};')
+        texts.addWidget(self.preset_name)
+        row.addLayout(texts, 1)
+        self.preset_menu_btn = QToolButton()
+        self.preset_menu_btn.setText('Пресет ')
+        self.preset_menu_btn.setIcon(icons.icon('sliders', T['text2'], T['text']))
+        self.preset_menu_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.preset_menu_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.preset_menu_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.preset_menu_btn.setStyleSheet(f'QToolButton {{ border: 1px solid {T["border_strong"]}; background: {T["raised"]}; color: {T["text"]};'
+                                           f' padding: 5px 10px; border-radius: 7px; }} QToolButton:hover {{ background: {T["hover"]}; }}')
+        self.preset_menu_btn.setToolTip('Настройки пресета: сохранить, переименовать, дублировать, экспорт, удалить')
+        menu = QMenu(self.preset_menu_btn)
+        self.preset_actions = {}
+        for key, text, icon_name in (('save', 'Сохранить изменения', 'save'), ('save_as', 'Сохранить как новый…', 'plus'),
+                                     (None, None, None), ('rename', 'Переименовать…', 'edit'),
+                                     ('duplicate', 'Дублировать', 'copy'), ('revert', 'Сбросить изменения', 'reset'),
+                                     (None, None, None), ('export', 'Экспорт в файл…', 'download'),
+                                     ('import', 'Импорт из файла…', 'upload'), ('delete', 'Удалить…', 'trash'),
+                                     (None, None, None), ('manage', 'Управление пресетами…', 'layers')):
+            if key is None:
+                menu.addSeparator()
+                continue
+            act = menu.addAction(icons.icon(icon_name), text, lambda k=key: self.presetAction.emit(k))
+            self.preset_actions[key] = act
+        self.preset_menu_btn.setMenu(menu)
+        row.addWidget(self.preset_menu_btn, 0, Qt.AlignmentFlag.AlignTop)
+        lay.addLayout(row)
+        self.preset_summary = FlowRow(spacing=4)
+        lay.addWidget(self.preset_summary)
+        self.dirty_row = QWidget()
+        dr = QHBoxLayout(self.dirty_row)
+        dr.setContentsMargins(0, 2, 0, 0)
+        dr.setSpacing(6)
+        self.dirty_label = label('Изменён', None)
+        self.dirty_label.setStyleSheet(f'color: {T["warning"]}; font-size: 12px;')
+        dr.addWidget(self.dirty_label, 1)
+        self.revert_btn = button('Сбросить', lambda: self.presetAction.emit('revert'), 'Ghost', 'reset')
+        self.save_btn = button('Сохранить', lambda: self.presetAction.emit('save'), 'Primary', 'save')
+        dr.addWidget(self.revert_btn)
+        dr.addWidget(self.save_btn)
+        lay.addWidget(self.dirty_row)
+        return card
+
+    def set_preset_info(self, name, dirty, own, summary):
+        self.preset_name.setText(name + ('  •' if dirty else ''))
+        self.preset_name.setToolTip(name)
+        self.dirty_row.setVisible(bool(dirty))
+        self.save_btn.setText('Сохранить' if own else 'Сохранить как…')
+        self.dirty_label.setText('Есть несохранённые изменения' if own else 'Встроенный пресет изменён')
+        self.preset_actions['save'].setEnabled(bool(dirty and own))
+        for key in ('rename', 'delete'):
+            self.preset_actions[key].setEnabled(bool(own))
+        self.preset_actions['revert'].setEnabled(bool(dirty))
+        self.preset_summary.clear()
+        for text in summary:
+            self.preset_summary.add(Chip(text, 'neutral'))
+
+    def set_histogram(self, data):
+        self.histogram.set_data(data)
+
     # ------------------------------------------------------------ helpers
-    def _section(self, key, title, icon_name, opened=True):
+    def _section(self, key, title, icon_name, accent, opened=True):
         stored = self.store.value(f'section/{key}', None)
-        section = Section(title, icon_name, opened if stored is None else stored in (True, 'true'))
+        section = Section(title, icon_name, opened if stored is None else stored in (True, 'true'), accent=accent)
         section.toggled.connect(lambda v, k=key: self.store.setValue(f'section/{k}', v))
         return section
 
@@ -128,16 +200,24 @@ class Inspector(QWidget):
         controls[key] = s
         return s
 
+    def _value_slider(self, controls, key, title, low, high, default, unit, setter):
+        s = ParamSlider(title, low, high, 1, default, unit)
+        s.default = default
+        s.valueChanged.connect(lambda v: setter(key, v, False))
+        s.editingFinished.connect(lambda: setter(key, None, True))
+        controls[key] = s
+        return s
+
     # ------------------------------------------------------------ batch page
     def _build_batch(self):
         body = QWidget()
         lay = QVBoxLayout(body)
-        lay.setContentsMargins(0, 0, 0, 16)
+        lay.setContentsMargins(0, 0, 0, 20)
         lay.setSpacing(0)
         c = self.batch_controls
 
-        # Size & framing
-        sec = self._section('size', 'Размер и кадр', 'crop')
+        sec = self._section('size', 'Размер и кадр', 'crop', ACCENTS['size'])
+        self.size_section = sec
         c['size_mode'] = Segmented([('Оригинал', 'original', 'Сохранить исходные пиксели'), ('Печать', 'print', 'Размер отпечатка в мм и PPI'),
                                     ('Пиксели', 'pixels', 'Точный размер в пикселях'), ('Сторона', 'long_edge', 'Длинная сторона в пикселях')], compact=True)
         c['size_mode'].changed.connect(lambda v: self._set('size_mode', v, commit=True))
@@ -146,15 +226,17 @@ class Inspector(QWidget):
         pl = QVBoxLayout(self.print_box)
         pl.setContentsMargins(0, 4, 0, 0)
         pl.setSpacing(6)
-        c['paper'] = _combo([(n, (w, h)) for n, w, h in PAPER_SIZES] + [('Свой размер', None)])
-        c['paper'].activated.connect(self._paper_chosen)
+        c['paper'] = Dropdown(['Фотопечать'] + [(n, (w, h)) for n, w, h in PAPER_SIZES[:8]] + [None, 'Офисные форматы']
+                              + [(n, (w, h)) for n, w, h in PAPER_SIZES[8:]], placeholder='Свой размер')
+        c['paper'].changed.connect(self._paper_chosen)
         pl.addWidget(_row('Формат', c['paper']))
         dims = QWidget()
         dl = QHBoxLayout(dims)
         dl.setContentsMargins(8, 0, 0, 0)
         dl.setSpacing(6)
-        dl.addWidget(label('Размер, мм', 'Muted'), 0)
-        dl.itemAt(0).widget().setMinimumWidth(86)
+        t = label('Размер, мм', 'Muted')
+        t.setFixedWidth(92)
+        dl.addWidget(t)
         c['width_mm'] = _spin(10, 2000, '', 1, 1)
         c['height_mm'] = _spin(10, 2000, '', 1, 1)
         c['width_mm'].valueChanged.connect(lambda v: self._set('width_mm', float(v), commit=True))
@@ -162,28 +244,28 @@ class Inspector(QWidget):
         dl.addWidget(c['width_mm'], 1)
         dl.addWidget(label('×', 'Hint'))
         dl.addWidget(c['height_mm'], 1)
-        swap = tool('swap', 'Поменять стороны местами', self._swap_sides, size=16)
-        dl.addWidget(swap)
+        dl.addWidget(tool('swap', 'Поменять стороны местами', self._swap_sides, size=16))
         pl.addWidget(dims)
         c['dpi'] = _spin(72, 1200, ' PPI')
         c['dpi'].valueChanged.connect(lambda v: self._set('dpi', int(v), commit=True))
         pl.addWidget(_row('Разрешение', c['dpi'], 'Плотность пикселей файла (не DPI принтера). Для фотопечати — 300.'))
-        self.pixel_note = label('', 'Hint', wrap=True)
+        self.pixel_note = _note('')
         pl.addWidget(self.pixel_note)
         sec.layout.addWidget(self.print_box)
         self.pixels_box = QWidget()
         xl = QVBoxLayout(self.pixels_box)
         xl.setContentsMargins(0, 4, 0, 0)
         xl.setSpacing(6)
-        c['pixel_preset'] = _combo([('Свой размер', None)] + [(n, (w, h)) for n, w, h in PIXEL_PRESETS])
-        c['pixel_preset'].activated.connect(self._pixel_preset_chosen)
+        c['pixel_preset'] = Dropdown(PIXEL_PRESETS, placeholder='Свой размер')
+        c['pixel_preset'].changed.connect(self._pixel_preset_chosen)
         xl.addWidget(_row('Шаблон', c['pixel_preset']))
         pdims = QWidget()
         pdl = QHBoxLayout(pdims)
         pdl.setContentsMargins(8, 0, 0, 0)
         pdl.setSpacing(6)
-        pdl.addWidget(label('Размер, px', 'Muted'))
-        pdl.itemAt(0).widget().setMinimumWidth(86)
+        t = label('Размер, px', 'Muted')
+        t.setFixedWidth(92)
+        pdl.addWidget(t)
         c['pixel_width'] = _spin(16, 32768)
         c['pixel_height'] = _spin(16, 32768)
         c['pixel_width'].valueChanged.connect(lambda v: self._set('pixel_width', int(v), commit=True))
@@ -200,7 +282,7 @@ class Inspector(QWidget):
         c['long_edge'].valueChanged.connect(lambda v: self._set('long_edge', int(v), commit=True))
         el.addWidget(_row('Длинная сторона', c['long_edge']))
         quick = QHBoxLayout()
-        quick.setContentsMargins(100, 0, 0, 0)
+        quick.setContentsMargins(108, 0, 0, 0)
         for value in (2048, 3840, 6000):
             b = QPushButton(f'{value}')
             b.setObjectName('Ghost')
@@ -210,7 +292,7 @@ class Inspector(QWidget):
         quick.addStretch()
         el.addLayout(quick)
         sec.layout.addWidget(self.edge_box)
-        self.original_note = label('Пиксели не меняются. Можно обрезать отдельные снимки во вкладке «Этот снимок».', 'Hint', wrap=True)
+        self.original_note = _note('Пиксели не меняются. Обрезать отдельные снимки можно во вкладке «Этот снимок».')
         sec.layout.addWidget(self.original_note)
         self.fit_box = QWidget()
         fl = QVBoxLayout(self.fit_box)
@@ -219,7 +301,7 @@ class Inspector(QWidget):
         c['fit'] = Segmented([('Заполнить', 'cover', 'Заполнить формат, обрезав лишнее'), ('Вписать', 'contain', 'Весь кадр, с полями')], compact=True)
         c['fit'].changed.connect(lambda v: self._set('fit', v, commit=True))
         fl.addWidget(c['fit'])
-        c['smart_crop'] = Switch('Умный кадр: лица и главное в кадре')
+        c['smart_crop'] = Switch('Умный кадр: лица и главное')
         c['smart_crop'].toggled.connect(lambda v: self._set('smart_crop', v, commit=True))
         fl.addWidget(c['smart_crop'])
         c['auto_orientation'] = Switch('Поворачивать формат под снимок')
@@ -229,13 +311,14 @@ class Inspector(QWidget):
         bl = QHBoxLayout(borders)
         bl.setContentsMargins(8, 0, 0, 0)
         bl.setSpacing(6)
-        bl.addWidget(label('Поля, мм', 'Muted'))
-        bl.itemAt(0).widget().setMinimumWidth(86)
+        t = label('Поля, мм', 'Muted')
+        t.setFixedWidth(92)
+        bl.addWidget(t)
         c['border_mm'] = _spin(0, 100, '', 1, .5)
         c['border_mm'].valueChanged.connect(lambda v: self._set('border_mm', float(v), commit=True))
         bl.addWidget(c['border_mm'], 1)
-        c['background'] = _combo([('Белые', '#ffffff'), ('Чёрные', '#000000'), ('Серые', '#808080')])
-        c['background'].activated.connect(lambda _: self._set('background', c['background'].currentData(), commit=True))
+        c['background'] = Dropdown([('Белые', '#ffffff'), ('Чёрные', '#000000'), ('Серые', '#808080')])
+        c['background'].changed.connect(lambda v: self._set('background', v, commit=True))
         bl.addWidget(c['background'], 1)
         self.border_row = borders
         fl.addWidget(borders)
@@ -245,34 +328,34 @@ class Inspector(QWidget):
         sec.layout.addWidget(c['allow_upscale'])
         lay.addWidget(sec)
 
-        # Light & colour
-        sec = self._section('light', 'Свет и цвет', 'sun')
-        reset = tool('reset', 'Сбросить свет и цвет', lambda: self._reset_adjust(LIGHT + COLOR), size=15)
-        sec.add_header_widget(reset)
+        sec = self._section('light', 'Свет и цвет', 'sun', ACCENTS['light'])
+        sec.add_header_widget(tool('reset', 'Сбросить свет и цвет', lambda: self._reset_adjust(LIGHT + COLOR), size=15))
         auto = QWidget()
-        auto.setObjectName('Card')
+        auto.setObjectName('AutoCard')
+        auto.setStyleSheet(f'#AutoCard {{ background: {rgba(ACCENTS["neural"], .07)}; border: 1px solid {rgba(ACCENTS["neural"], .28)}; border-radius: 10px; }}')
         al = QVBoxLayout(auto)
         al.setContentsMargins(10, 8, 10, 10)
         al.setSpacing(6)
         head = QHBoxLayout()
         ic = QLabel()
-        ic.setPixmap(icons.pixmap('sparkles', T['accent_hover'], 18))
+        ic.setPixmap(icons.pixmap('sparkles', ACCENTS['neural'], 18))
         head.addWidget(ic)
         c['auto'] = Switch('Умная авто-коррекция')
-        c['auto'].setToolTip('Анализирует каждый снимок отдельно: баланс белого (обученная модель + нейтральные участки),\n'
-                             'экспозиция с учётом лиц, тени/света, контраст, сочность, дымка и шум.')
+        c['auto'].setToolTip('Анализирует каждый снимок отдельно: баланс белого (голосование нейтральных цветов),\n'
+                             'экспозиция с учётом лиц и запаса светов, авто-уровни, тени и света, сочность, шум.\n'
+                             'Хорошие снимки почти не трогает.')
         c['auto'].toggled.connect(lambda v: self._set_adjust('auto', v, commit=True))
         head.addWidget(c['auto'], 1)
         al.addLayout(head)
-        c['auto_strength'] = ParamSlider('Сила', 0, 100, 1, 70, '%')
-        c['auto_strength'].default = 70
+        c['auto_strength'] = ParamSlider('Сила', 0, 100, 1, 80, '%')
+        c['auto_strength'].default = 80
         c['auto_strength'].valueChanged.connect(lambda v: self._set_adjust('auto_strength', v, commit=False))
         c['auto_strength'].editingFinished.connect(lambda: self._set_adjust('auto_strength', None, commit=True))
         al.addWidget(c['auto_strength'])
         toggles = QHBoxLayout()
         toggles.setSpacing(4)
-        for key, text, tip in (('auto_wb', 'Баланс белого', 'Нейтрализовать цветной оттенок освещения'),
-                               ('auto_light', 'Свет', 'Экспозиция, тени, света, контраст, дымка'),
+        for key, text, tip in (('auto_wb', 'Баланс белого', 'Убрать цветной оттенок освещения'),
+                               ('auto_light', 'Свет', 'Экспозиция, уровни, тени, света, контраст'),
                                ('auto_color', 'Цвет', 'Сочность для блёклых снимков'),
                                ('auto_noise', 'Шум', 'Шумоподавление по оценке шума снимка')):
             chip = ChipToggle(text)
@@ -282,11 +365,10 @@ class Inspector(QWidget):
             toggles.addWidget(chip)
         toggles.addStretch()
         al.addLayout(toggles)
-        self.batch_auto_caption = label('Для текущего снимка авто сделало:', 'Hint')
+        self.batch_auto_caption = label('Для текущего снимка:', 'Hint')
         al.addWidget(self.batch_auto_caption)
         self.batch_auto_notes = FlowRow()
         al.addWidget(self.batch_auto_notes)
-        self.auto_card = auto
         sec.layout.addWidget(auto)
         sec.layout.addSpacing(4)
         for key in LIGHT:
@@ -296,13 +378,13 @@ class Inspector(QWidget):
             sec.layout.addWidget(self._slider(key, c))
         lay.addWidget(sec)
 
-        sec = self._section('detail', 'Детали и шум', 'detail', opened=False)
+        sec = self._section('detail', 'Детали и шум', 'detail', ACCENTS['detail'], opened=False)
         sec.add_header_widget(tool('reset', 'Сбросить детали', lambda: self._reset_adjust(DETAIL), size=15))
         for key in DETAIL:
             sec.layout.addWidget(self._slider(key, c))
         lay.addWidget(sec)
 
-        sec = self._section('look', 'Стиль', 'palette', opened=False)
+        sec = self._section('look', 'Стиль', 'palette', ACCENTS['style'], opened=False)
         grid = QGridLayout()
         grid.setSpacing(6)
         self.look_buttons = {}
@@ -310,50 +392,38 @@ class Inspector(QWidget):
             b = QPushButton(name)
             b.setCheckable(True)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.setStyleSheet(f'''QPushButton {{ padding: 8px 6px; font-size: 12px; }}
-                QPushButton:checked {{ background: rgba(76,141,255,0.18); border-color: {T["accent"]}; color: #cfe0ff; }}''')
+            b.setStyleSheet(f'''QPushButton {{ padding: 8px 4px; font-size: 12px; }}
+                QPushButton:checked {{ background: {rgba(ACCENTS["style"], .18)}; border-color: {ACCENTS["style"]}; color: #ffd3ec; }}''')
             b.clicked.connect(lambda _=False, k=key: self._set_adjust('look', k, commit=True))
             self.look_buttons[key] = b
             grid.addWidget(b, i // 3, i % 3)
         sec.layout.addLayout(grid)
-        c['look_strength'] = ParamSlider('Сила стиля', 0, 100, 1, 100, '%')
-        c['look_strength'].default = 100
-        c['look_strength'].valueChanged.connect(lambda v: self._set_adjust('look_strength', v, commit=False))
-        c['look_strength'].editingFinished.connect(lambda: self._set_adjust('look_strength', None, commit=True))
-        sec.layout.addWidget(c['look_strength'])
+        sec.layout.addWidget(self._value_slider(c, 'look_strength', 'Сила стиля', 0, 100, 100, '%', self._set_adjust_value))
         lay.addWidget(sec)
 
-        sec = self._section('neural', 'Нейросеть', 'cpu', opened=False)
-        c['upscaler'] = Segmented([('Выкл', 'off'), ('Быстро ×2', 'fsrcnn', 'FSRCNN ×2 — лёгкая, быстрая'),
-                                   ('Качество ×4', 'esrgan', 'Real-ESRGAN ×4 — восстанавливает детали, чистит JPEG-артефакты и шум')], compact=True)
-        c['upscaler'].changed.connect(lambda v: self._set('upscaler', v, commit=True))
-        sec.layout.addWidget(c['upscaler'])
-        c['neural_strength'] = ParamSlider('Сила', 0, 100, 1, 100, '%')
-        c['neural_strength'].default = 100
-        c['neural_strength'].valueChanged.connect(lambda v: self._set('neural_strength', v, commit=False))
-        c['neural_strength'].editingFinished.connect(lambda: self._set('neural_strength', None, commit=True))
-        sec.layout.addWidget(c['neural_strength'])
-        c['neural_always'] = Switch('Чистить и без увеличения')
-        c['neural_always'].setToolTip('Пропустить снимок через нейросеть, даже если он не увеличивается:\n'
-                                      'убирает JPEG-артефакты и шум у плохих исходников. Медленно; до 6 Мп.')
-        c['neural_always'].toggled.connect(lambda v: self._set('neural_always', v, commit=True))
-        sec.layout.addWidget(c['neural_always'])
-        self.neural_hint = label('Работает локально на процессоре. Эффект виден в масштабе 100% — '
-                                 'там же показывается прогресс.', 'Hint', wrap=True)
-        sec.layout.addWidget(self.neural_hint)
-        sec.layout.addWidget(button('Посмотреть в 100%', lambda: self.action.emit('view100'), icon_name='eye'))
+        sec = self._section('neural', 'Нейросеть', 'cpu', ACCENTS['neural'], opened=False)
+        self.neural_section = sec
+        c['neural'] = Switch('Улучшать нейросетью')
+        c['neural'].setToolTip('Real-ESRGAN: восстанавливает детали, убирает JPEG-артефакты и шум.\n'
+                               f'Включается для снимков, которые увеличиваются в {NEURAL_MIN_SCALE:g}× и больше.')
+        c['neural'].toggled.connect(lambda v: self._set('neural', v, commit=True))
+        sec.layout.addWidget(c['neural'])
+        sec.layout.addWidget(self._value_slider(c, 'neural_strength', 'Сила', 0, 100, 80, '%', self._set_value))
+        self.neural_state = QLabel()
+        self.neural_state.setWordWrap(True)
+        self.neural_state.setContentsMargins(8, 2, 0, 2)
+        sec.layout.addWidget(self.neural_state)
+        sec.layout.addWidget(_note('Считается один раз для снимка, потом любые правки цвета — мгновенно. '
+                                   'Результат виден сразу в просмотре; детали — в масштабе 1:1.'))
+        sec.layout.addWidget(button('Посмотреть 1:1', lambda: self.action.emit('view100'), icon_name='eye'))
         lay.addWidget(sec)
 
-        sec = self._section('output', 'Печать и файл', 'printer')
+        sec = self._section('output', 'Печать и файл', 'printer', ACCENTS['output'])
         c['format'] = Segmented([('JPEG', 'JPEG', 'Компактно, для лабораторий и печати'), ('TIFF', 'TIFF', 'Без потерь, 8 или 16 бит'),
                                  ('PNG', 'PNG', 'Без потерь, 8 или 16 бит')], compact=True)
-        c['format'].changed.connect(self._format_changed)
+        c['format'].changed.connect(lambda v: self._set('format', v, commit=True))
         sec.layout.addWidget(c['format'])
-        c['quality'] = ParamSlider('Качество JPEG', 50, 100, 1, 95)
-        c['quality'].default = 95
-        c['quality'].valueChanged.connect(lambda v: self._set('quality', int(v), commit=False))
-        c['quality'].editingFinished.connect(lambda: self._set('quality', None, commit=True))
-        sec.layout.addWidget(c['quality'])
+        sec.layout.addWidget(self._value_slider(c, 'quality', 'Качество JPEG', 50, 100, 95, '', self._set_value))
         c['bit_depth'] = Segmented([('8 бит', 8), ('16 бит', 16, 'Больше градаций для ретуши и архива')], compact=True)
         c['bit_depth'].changed.connect(lambda v: self._set('bit_depth', v, commit=True))
         self.depth_row = _row('Глубина', c['bit_depth'])
@@ -372,9 +442,9 @@ class Inspector(QWidget):
         icc_row.addWidget(self.icc_label, 1)
         icc_row.addWidget(button('Выбрать…', self._choose_icc, icon_name='file'))
         il.addLayout(icc_row)
-        c['intent'] = _combo([('Относительный + BPC', 1), ('Перцепционный + BPC', 0)])
-        c['intent'].activated.connect(lambda _: self._set('intent', c['intent'].currentData(), commit=True))
-        il.addWidget(_row('Метод', c['intent'], 'Относительный — точнее для фото; перцепционный — мягче для насыщенных цветов вне охвата.'))
+        c['intent'] = Dropdown([('Относительный + BPC', 1, 'Точнее для фото'), ('Перцепционный + BPC', 0, 'Мягче для насыщенных цветов вне охвата')])
+        c['intent'].changed.connect(lambda v: self._set('intent', v, commit=True))
+        il.addWidget(_row('Метод', c['intent']))
         sec.layout.addWidget(self.icc_box)
         sec.layout.addSpacing(4)
         c['sharpen'] = Segmented([('Выкл', 'off'), ('Экран', 'screen'), ('Глянец', 'glossy'), ('Мат', 'matte')], compact=True)
@@ -384,12 +454,10 @@ class Inspector(QWidget):
         c['sharpen_amount'].changed.connect(lambda v: self._set('sharpen_amount', v, commit=True))
         self.amount_row = _row('Сила', c['sharpen_amount'])
         sec.layout.addWidget(self.amount_row)
-        c['print_brightness'] = ParamSlider('Яркость отпечатка', 0, 40, 1, 0, '%')
-        c['print_brightness'].setToolTip('Отпечаток темнее светящегося экрана. Поднимает средние тона,\n'
-                                         'не трогая чёрное и белое. Подберите по пробному отпечатку.')
-        c['print_brightness'].valueChanged.connect(lambda v: self._set('print_brightness', v, commit=False))
-        c['print_brightness'].editingFinished.connect(lambda: self._set('print_brightness', None, commit=True))
-        sec.layout.addWidget(c['print_brightness'])
+        pb = self._value_slider(c, 'print_brightness', 'Яркость отпечатка', 0, 40, 0, '%', self._set_value)
+        pb.setToolTip('Отпечаток темнее светящегося экрана. Поднимает средние тона,\n'
+                      'не трогая чёрное и белое. Подберите по пробному отпечатку.')
+        sec.layout.addWidget(pb)
         c['keep_exif'] = Switch('Сохранять EXIF (без GPS)')
         c['keep_exif'].toggled.connect(lambda v: self._set('keep_exif', v, commit=True))
         sec.layout.addWidget(c['keep_exif'])
@@ -401,7 +469,7 @@ class Inspector(QWidget):
     def _build_photo(self):
         body = QWidget()
         lay = QVBoxLayout(body)
-        lay.setContentsMargins(0, 0, 0, 16)
+        lay.setContentsMargins(0, 0, 0, 20)
         lay.setSpacing(0)
         c = self.photo_controls
         card = QWidget()
@@ -417,17 +485,15 @@ class Inspector(QWidget):
         self.reset_photo_btn = button('Сбросить', lambda: self.action.emit('reset_photo'), icon_name='reset')
         self.to_preset_btn = button('В пресет', lambda: self.action.emit('to_preset'), icon_name='layers')
         self.to_preset_btn.setToolTip('Перенести цветовые правки этого снимка в пресет — для всех фото')
-        self.copy_btn = button('Копировать', lambda: self.action.emit('copy_edits'))
-        self.copy_btn.setIcon(icons.icon('copy'))
-        self.copy_btn.setToolTip('Применить правки этого снимка к выбранным в ленте (Ctrl+Shift+V)')
-        actions.addWidget(self.reset_photo_btn)
-        actions.addWidget(self.to_preset_btn)
-        actions.addWidget(self.copy_btn)
+        self.copy_btn = button('', lambda: self.action.emit('copy_edits'), icon_name='copy')
+        self.copy_btn.setToolTip('Копировать правки этого снимка на выделенные в ленте (Ctrl+Shift+V)')
+        for b in (self.reset_photo_btn, self.to_preset_btn, self.copy_btn):
+            actions.addWidget(b)
         cl.addLayout(actions)
         lay.addWidget(card)
         lay.addWidget(hline())
 
-        sec = self._section('photo_frame', 'Кадр', 'crop')
+        sec = self._section('photo_frame', 'Кадр', 'crop', ACCENTS['size'])
         row = QHBoxLayout()
         row.setSpacing(6)
         self.crop_btn = button('Изменить кадр', lambda: self.action.emit('crop'), icon_name='crop')
@@ -438,20 +504,19 @@ class Inspector(QWidget):
         sec.layout.addLayout(row)
         c['angle'] = ParamSlider('Горизонт', -20, 20, .1, 0, '°', decimals=1)
         c['angle'].valueChanged.connect(lambda v: self._edit_set('angle', v, False))
-        c['angle'].editingFinished.connect(lambda: self._edit_set('angle', None, True))
+        c['angle'].editingFinished.connect(lambda: self._edit_set('angle', self.edit.angle, True))
         sec.layout.addWidget(c['angle'])
-        c['fit'] = Segmented([('Как в пресете', None), ('Заполнить', 'cover'), ('Вписать', 'contain')], compact=True)
+        c['fit'] = Segmented([('Как в пресете', None, 'Взять режим из пресета'), ('Заполнить', 'cover'), ('Вписать', 'contain')], compact=True)
         c['fit'].changed.connect(lambda v: self._edit_set('fit', v, True))
-        self.photo_fit_row = c['fit']
         sec.layout.addWidget(c['fit'])
         c['aspect'] = Segmented(ASPECTS, compact=True)
         c['aspect'].changed.connect(lambda v: self._edit_set('aspect', v, True))
-        self.photo_aspect = c['aspect']
         sec.layout.addWidget(c['aspect'])
         sec.layout.addWidget(button('Сбросить кадр', lambda: self.action.emit('reset_frame'), 'Ghost', 'reset'))
         lay.addWidget(sec)
 
-        sec = self._section('photo_light', 'Свет и цвет', 'sun')
+        sec = self._section('photo_light', 'Свет и цвет', 'sun', ACCENTS['light'])
+        sec.add_header_widget(tool('reset', 'Сбросить свет и цвет этого снимка', lambda: self._reset_adjust(LIGHT + COLOR), size=15))
         sec.layout.addWidget(label('Авто-коррекция для этого снимка:', 'Hint'))
         self.photo_auto_notes = FlowRow()
         sec.layout.addWidget(self.photo_auto_notes)
@@ -461,17 +526,21 @@ class Inspector(QWidget):
         for key in COLOR:
             sec.layout.addWidget(self._slider(key, c, photo=True))
         lay.addWidget(sec)
-        sec = self._section('photo_detail', 'Детали и шум', 'detail', opened=False)
+        sec = self._section('photo_detail', 'Детали и шум', 'detail', ACCENTS['detail'], opened=False)
         for key in DETAIL:
             sec.layout.addWidget(self._slider(key, c, photo=True))
         lay.addWidget(sec)
-        sec = self._section('photo_neural', 'Нейросеть', 'cpu', opened=False)
-        c['neural'] = Segmented([('Как в пресете', None), ('Вкл', True), ('Выкл', False)], compact=True)
+        sec = self._section('photo_neural', 'Нейросеть', 'cpu', ACCENTS['neural'], opened=False)
+        c['neural'] = Segmented([('Как в пресете', None, 'Взять из пресета'), ('Вкл', True), ('Выкл', False)], compact=True)
         c['neural'].changed.connect(lambda v: self._edit_set('neural', v, True))
         sec.layout.addWidget(c['neural'])
-        sec.layout.addWidget(button('Посмотреть в 100%', lambda: self.action.emit('view100'), icon_name='eye'))
+        self.photo_neural_state = QLabel()
+        self.photo_neural_state.setWordWrap(True)
+        self.photo_neural_state.setContentsMargins(8, 2, 0, 2)
+        sec.layout.addWidget(self.photo_neural_state)
+        sec.layout.addWidget(button('Посмотреть 1:1', lambda: self.action.emit('view100'), icon_name='eye'))
         lay.addWidget(sec)
-        lay.addWidget(label('   Размер, стиль и формат файла задаются для всей партии.', 'Hint'))
+        lay.addWidget(_note('Размер, стиль и формат файла задаются для всей партии во вкладке «Все фото».'))
         lay.addStretch()
         self.pages.addWidget(_scroll(body))
 
@@ -482,8 +551,6 @@ class Inspector(QWidget):
         self.scope = scope
         self.scope_switch.setValue(scope)
         self.pages.setCurrentIndex(0 if scope == 'batch' else 1)
-        self.scope_hint.setText('Пресет: применяется ко всем фото папки.' if scope == 'batch'
-                                else 'Правки только этого снимка — поверх пресета. Метка на шкале — значение пресета.')
         if emit:
             self.scopeChanged.emit(scope)
 
@@ -500,12 +567,29 @@ class Inspector(QWidget):
         finally:
             self._updating = False
 
+    def set_neural_state(self, state, reason='', progress=None, eta=None):
+        """state: off | not_needed | pending | ready | running."""
+        if state == 'running':
+            text = f'Считается для этого снимка: {progress * 100:.0f}%' + (f' · ещё ≈ {eta:.0f} с' if eta else '')
+            color_ = ACCENTS['neural']
+        elif state == 'pending':
+            text, color_ = 'Для этого снимка: ставим в очередь…', ACCENTS['neural']
+        elif state == 'ready':
+            text, color_ = 'Для этого снимка: применена ✓', T['success']
+        elif state == 'not_needed':
+            text, color_ = reason or 'Этому снимку не нужна', T['text3']
+        else:
+            text, color_ = 'Выключена', T['text3']
+        for w in (self.neural_state, self.photo_neural_state):
+            w.setText(text)
+            w.setStyleSheet(f'color: {color_}; font-size: 12px;')
+        self.neural_section.set_subtitle({'running': 'идёт расчёт', 'ready': 'применена', 'pending': 'в очереди'}.get(state, ''))
+
     def set_auto_notes(self, analysis, auto_offsets=None):
         for flow in (self.batch_auto_notes, self.photo_auto_notes):
             flow.clear()
         if not self.settings.adjust.auto:
-            note = Chip('Авто выключено', 'neutral')
-            self.photo_auto_notes.add(note)
+            self.photo_auto_notes.add(Chip('Авто выключено', 'neutral'))
             return
         if analysis is None:
             for flow in (self.batch_auto_notes, self.photo_auto_notes):
@@ -517,8 +601,10 @@ class Inspector(QWidget):
             value = offsets.get(key, 0)
             if abs(value) >= 5:
                 notes.append(f'{ADJUST_RANGES[key][0]} {value:+.0f}'.replace('-', '−'))
+        if offsets.get('levels'):
+            notes.append('Уровни растянуты')
         if not notes:
-            notes = ['Снимок в порядке — правки минимальны']
+            notes = ['Снимок в порядке — правки не нужны']
         for flow in (self.batch_auto_notes, self.photo_auto_notes):
             for text in notes:
                 flow.add(Chip(text, 'neutral'))
@@ -530,12 +616,10 @@ class Inspector(QWidget):
             c[key].blockSignals(True)
             c[key].setValue(getattr(s, key))
             c[key].blockSignals(False)
-        paper = next((i for i in range(c['paper'].count()) if c['paper'].itemData(i)
-                      and tuple(c['paper'].itemData(i)) in ((s.width_mm, s.height_mm), (s.height_mm, s.width_mm))), c['paper'].count() - 1)
-        c['paper'].setCurrentIndex(paper)
-        pix = next((i for i in range(c['pixel_preset'].count()) if c['pixel_preset'].itemData(i)
-                    and tuple(c['pixel_preset'].itemData(i)) == (s.pixel_width, s.pixel_height)), 0)
-        c['pixel_preset'].setCurrentIndex(pix)
+        paper = next((v for n, v in [(n, (w, h)) for n, w, h in PAPER_SIZES]
+                      if v in ((s.width_mm, s.height_mm), (s.height_mm, s.width_mm))), None)
+        c['paper'].setValue(paper)
+        c['pixel_preset'].setValue(next((v for n, v in PIXEL_PRESETS if v == (s.pixel_width, s.pixel_height)), None))
         mode = s.size_mode
         self.print_box.setVisible(mode == 'print')
         self.pixels_box.setVisible(mode == 'pixels')
@@ -549,12 +633,11 @@ class Inspector(QWidget):
             self.pixel_note.setText(f'Файл: {w} × {h} px · {w * h / 1e6:.1f} Мп')
         c['fit'].setValue(s.fit)
         c['smart_crop'].setEnabled(s.fit == 'cover')
-        for key in ('smart_crop', 'auto_orientation', 'allow_upscale', 'neural_always', 'keep_exif'):
+        for key in ('smart_crop', 'auto_orientation', 'allow_upscale', 'keep_exif', 'neural'):
             c[key].blockSignals(True)
             c[key].setChecked(getattr(s, key))
             c[key].blockSignals(False)
-        idx = c['background'].findData(s.background)
-        c['background'].setCurrentIndex(max(0, idx))
+        c['background'].setValue(s.background)
         a = s.adjust
         c['auto'].blockSignals(True)
         c['auto'].setChecked(a.auto)
@@ -575,10 +658,8 @@ class Inspector(QWidget):
             b.setChecked(key == a.look)
         c['look_strength'].setValue(a.look_strength)
         c['look_strength'].setEnabled(a.look != 'none')
-        c['upscaler'].setValue(s.upscaler)
         c['neural_strength'].setValue(s.neural_strength)
-        c['neural_strength'].setEnabled(s.upscaler != 'off')
-        c['neural_always'].setEnabled(s.upscaler != 'off')
+        c['neural_strength'].setEnabled(s.neural)
         c['format'].setValue(s.format)
         c['quality'].setValue(s.quality)
         c['quality'].setVisible(s.format == 'JPEG')
@@ -589,7 +670,7 @@ class Inspector(QWidget):
         self.icc_box.setVisible(s.output_space == 'ICC')
         self.icc_label.setText(Path(s.icc_path).name if s.icc_path else 'Профиль не выбран')
         self.icc_label.setToolTip(s.icc_path)
-        c['intent'].setCurrentIndex(max(0, c['intent'].findData(s.intent)))
+        c['intent'].setValue(s.intent)
         c['sharpen'].setValue(s.sharpen)
         c['sharpen_amount'].setValue(s.sharpen_amount)
         self.amount_row.setVisible(s.sharpen != 'off')
@@ -601,15 +682,14 @@ class Inspector(QWidget):
             p = self.photo
             self.photo_name.setText(p.path.name)
             self.photo_meta.setText(f'{p.size[0]} × {p.size[1]} px · {p.megapixels:.1f} Мп · {p.bits} бит · {p.profile}')
-        has_edits = not e.is_default()
-        self.reset_photo_btn.setEnabled(has_edits)
+        self.reset_photo_btn.setEnabled(not e.is_default())
         self.to_preset_btn.setEnabled(bool(e.offsets))
         c['angle'].setValue(e.angle)
         c['fit'].setValue(e.fit)
         c['aspect'].setValue(e.aspect)
         frame_modes = self.settings.size_mode in ('print', 'pixels')
-        self.photo_fit_row.setVisible(frame_modes)
-        self.photo_aspect.setVisible(not frame_modes)
+        c['fit'].setVisible(frame_modes)
+        c['aspect'].setVisible(not frame_modes)
         for key in LIGHT + COLOR + DETAIL:
             base = getattr(a, key)
             _, low, high, _, _ = ADJUST_RANGES[key]
@@ -623,6 +703,14 @@ class Inspector(QWidget):
         self.crop_btn.blockSignals(False)
 
     # ------------------------------------------------------------ state out
+    def _emit_settings(self, commit):
+        self.settingsEdited.emit(replace(self.settings, adjust=replace(self.settings.adjust)), commit)
+
+    def _resync(self):
+        self._updating = True
+        self._sync_batch()
+        self._updating = False
+
     def _set(self, key, value, commit, refresh=False):
         if self._updating:
             return
@@ -633,11 +721,15 @@ class Inspector(QWidget):
         if key == 'format' and value == 'JPEG':
             self.settings.bit_depth = 8
         setattr(self.settings, key, value)
-        if key in ('size_mode', 'fit', 'upscaler', 'format', 'output_space', 'sharpen', 'width_mm', 'height_mm', 'dpi') or refresh:
-            self._updating = True
-            self._sync_batch()
-            self._updating = False
-        self.settingsEdited.emit(replace(self.settings, adjust=replace(self.settings.adjust)), commit)
+        if key in ('size_mode', 'fit', 'neural', 'format', 'output_space', 'sharpen', 'width_mm', 'height_mm', 'dpi') or refresh:
+            self._resync()
+        self._emit_settings(commit)
+
+    def _set_value(self, key, value, commit):
+        """Slider-backed Settings fields (quality, strengths, print brightness)."""
+        if value is not None:
+            value = int(value) if key == 'quality' else value
+        self._set(key, value, commit)
 
     def _set_adjust(self, key, value, commit):
         if self._updating:
@@ -645,10 +737,11 @@ class Inspector(QWidget):
         if value is not None:
             setattr(self.settings.adjust, key, value)
         if key in ('auto', 'look'):
-            self._updating = True
-            self._sync_batch()
-            self._updating = False
-        self.settingsEdited.emit(replace(self.settings, adjust=replace(self.settings.adjust)), commit)
+            self._resync()
+        self._emit_settings(commit)
+
+    def _set_adjust_value(self, key, value, commit):
+        self._set_adjust(key, value, commit)
 
     def _adjust_changed(self, key, value, photo, commit):
         if self._updating:
@@ -669,13 +762,9 @@ class Inspector(QWidget):
     def _edit_set(self, key, value, commit):
         if self._updating:
             return
-        if value is not None or key in ('fit', 'aspect', 'neural'):
-            if key == 'angle' and value is None:
-                pass
-            else:
-                setattr(self.edit, key, value)
-        if key == 'aspect':
-            self.edit.manual_crop = self.edit.manual_crop or value is not None
+        setattr(self.edit, key, value)
+        if key == 'aspect' and value is not None:
+            self.edit.manual_crop = True
         self.reset_photo_btn.setEnabled(not self.edit.is_default())
         self.editEdited.emit(replace(self.edit, offsets=dict(self.edit.offsets)), commit)
 
@@ -690,35 +779,28 @@ class Inspector(QWidget):
             return
         for key in keys:
             setattr(self.settings.adjust, key, 0)
-        self._updating = True
-        self._sync_batch()
-        self._updating = False
-        self.settingsEdited.emit(replace(self.settings, adjust=replace(self.settings.adjust)), True)
+        self._resync()
+        self._emit_settings(True)
 
-    def _paper_chosen(self, index):
-        data = self.batch_controls['paper'].itemData(index)
-        if not data:
+    def _paper_chosen(self, value):
+        if not value:
             return
-        w, h = data
+        w, h = value
         if (self.settings.width_mm > self.settings.height_mm) != (w > h) and w != h:
             w, h = h, w
         self.settings.width_mm, self.settings.height_mm = float(w), float(h)
         self._set('width_mm', float(w), commit=True, refresh=True)
 
-    def _pixel_preset_chosen(self, index):
-        data = self.batch_controls['pixel_preset'].itemData(index)
-        if not data:
+    def _pixel_preset_chosen(self, value):
+        if not value:
             return
-        self.settings.pixel_width, self.settings.pixel_height = data
-        self._set('pixel_width', data[0], commit=True, refresh=True)
+        self.settings.pixel_width, self.settings.pixel_height = value
+        self._set('pixel_width', value[0], commit=True, refresh=True)
 
     def _swap_sides(self):
         s = self.settings
         s.width_mm, s.height_mm = s.height_mm, s.width_mm
         self._set('width_mm', s.width_mm, commit=True, refresh=True)
-
-    def _format_changed(self, value):
-        self._set('format', value, commit=True)
 
     def _space_changed(self, value):
         if value == 'ICC' and not self.settings.icc_path:
@@ -726,7 +808,6 @@ class Inspector(QWidget):
                 self._updating = True
                 self.batch_controls['output_space'].setValue('sRGB')
                 self._updating = False
-                return
             return
         if value == 'ICC':
             self.settings.bit_depth = 8

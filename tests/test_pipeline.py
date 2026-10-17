@@ -173,7 +173,10 @@ def test_auto_strength_scales_and_switches(tmp_path):
     full, _ = auto.auto_values(a, Adjust(auto=True, auto_strength=100))
     half, _ = auto.auto_values(a, Adjust(auto=True, auto_strength=50))
     for key, value in full.items():
-        assert abs(half[key] - value / 2) < 1e-6
+        if key == 'levels':
+            assert abs(half[key][0] - value[0] / 2) < 1e-6 and abs((1 - half[key][1]) - (1 - value[1]) / 2) < 1e-6
+        else:
+            assert abs(half[key] - value / 2) < 1e-6
     none, gains = auto.auto_values(a, Adjust(auto=True, auto_light=False, auto_color=False, auto_noise=False, auto_wb=False))
     assert none == {} and np.allclose(gains, 1)
 

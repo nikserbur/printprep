@@ -16,7 +16,7 @@ import numpy as np
 from . import __version__
 from .imageio import inspect, read_exif, save
 from .model import Edit, Settings
-from .pipeline import AnalysisCache, Source, assess, plan, render, to_output
+from .pipeline import AnalysisCache, Source, assess, enhanced, neural_status, plan, render_fast, to_output
 
 EXTENSIONS = {'JPEG': '.jpg', 'TIFF': '.tif', 'PNG': '.png'}
 STRIP_PIXELS = 6_000_000
@@ -42,7 +42,7 @@ def available_memory():
 
 
 def worker_count(settings: Settings, photos):
-    if settings.upscaler != 'off':
+    if settings.neural:
         return 1  # the network already uses every core
     biggest = max((p.size[0] * p.size[1] for p in photos), default=1)
     per_job = biggest * 3 * 2 + STRIP_PIXELS * 3 * 4 * 7 + 300e6
@@ -75,21 +75,27 @@ def destinations(folder: Path, output: Path, photos, settings: Settings):
 
 def render_file(source: Source, settings: Settings, edit: Edit, cancel=None, progress=None, analysis_cache=None):
     """Full-resolution render in horizontal strips; returns (array, mode, icc, notes, neural)."""
-    w, h = plan(source, settings, edit, analysis_cache).canvas
+    geom = plan(source, settings, edit, analysis_cache)
+    w, h = geom.canvas
+    applies, reason = neural_status(source, settings, edit, geom)
+    notes = [reason] if reason else []
+    entry = None
+    if applies:
+        entry = enhanced(source, settings, edit, progress=(lambda f, eta: progress(.85 * f)) if progress else None,
+                         cancel=cancel)
     rows = max(64, STRIP_PIXELS // max(1, w))
-    strips, notes, neural_used = [], [], False
+    strips = []
     total = (h + rows - 1) // rows
     for index, top in enumerate(range(0, h, rows)):
         if cancel and cancel():
             raise InterruptedError('Остановлено.')
-        part_progress = (lambda f, i=index: progress((i + f) / total)) if progress else None
-        r = render(source, settings, edit, k=1, region=(0, top, w, min(rows, h - top)),
-                   progress=part_progress, cancel=cancel, analysis_cache=analysis_cache)
+        r = render_fast(source, settings, edit, k=1, region=(0, top, w, min(rows, h - top)),
+                        enhanced_source=entry, analysis_cache=analysis_cache)
         strips.append((top, r.image))
         notes.extend(n for n in r.notes if n not in notes)
-        neural_used |= r.neural
         if progress:
-            progress((index + 1) / total)
+            progress((.85 if applies else 0) + (.15 if applies else 1) * (index + 1) / total)
+    neural_used = entry is not None
     if settings.output_space == 'sRGB':
         dtype = np.uint16 if settings.bit_depth == 16 else np.uint8
         out = np.empty((h, w, 3), dtype=dtype)

@@ -9,7 +9,8 @@ SIZE_MODES = ('original', 'print', 'pixels', 'long_edge')
 FORMATS = ('JPEG', 'TIFF', 'PNG')
 SHARPEN = ('off', 'screen', 'glossy', 'matte')
 SHARPEN_AMOUNTS = ('low', 'standard', 'high')
-UPSCALERS = ('off', 'fsrcnn', 'esrgan')
+NEURAL_MIN_SCALE = 1.3      # below this enlargement classic resampling looks the same in print
+NEURAL_MAX_MP = 4.0         # larger sources rarely need it and cost too much on weak PCs
 
 # Slider fields of Adjust: (title, low, high, step, unit). Order is the UI order.
 ADJUST_RANGES = {
@@ -110,9 +111,8 @@ class Settings:
     sharpen: str = 'off'
     sharpen_amount: str = 'standard'
     print_brightness: float = 0
-    upscaler: str = 'off'
-    neural_strength: float = 100
-    neural_always: bool = False
+    neural: bool = False
+    neural_strength: float = 80
     adjust: Adjust = field(default_factory=Adjust)
 
     def validate(self, check_icc=True):
@@ -163,8 +163,8 @@ class Settings:
             raise ValueError('Неизвестный режим резкости.')
         if not _finite(self.print_brightness) or not 0 <= self.print_brightness <= 40:
             raise ValueError('Компенсация яркости отпечатка: от 0 до 40%.')
-        if self.upscaler not in UPSCALERS:
-            raise ValueError('Неизвестная нейросеть.')
+        if type(self.neural) is not bool:
+            raise ValueError('Некорректный переключатель нейросети.')
         if not _finite(self.neural_strength) or not 0 <= self.neural_strength <= 100:
             raise ValueError('Сила нейросети: от 0 до 100.')
         _color(self.background)
@@ -200,6 +200,8 @@ class Settings:
             return migrate_v1(data)
         names = {f.name for f in fields(cls)} - {'adjust'}
         values = {k: v for k, v in data.items() if k in names}
+        if 'upscaler' in data and 'neural' not in data:   # 2.0.0 had a choice of two networks
+            values['neural'] = data['upscaler'] != 'off'
         adjust = data.get('adjust') or {}
         if not isinstance(adjust, dict):
             raise ValueError('Некорректный блок коррекции.')
@@ -311,8 +313,8 @@ def migrate_v1(data) -> Settings:
         s.sharpen = 'glossy'
     elif data.get('sharpen'):
         s.sharpen = 'screen'
-    s.upscaler = 'fsrcnn' if data.get('upscaler') == 'fsrcnn' else 'off'
-    s.neural_strength = round(100 * float(data.get('neural_strength', 1)))
+    s.neural = data.get('upscaler') == 'fsrcnn'
+    s.neural_strength = round(100 * float(data.get('neural_strength', .8)))
     k = float(data.get('enhancement_strength', .7)) * 100
     a = s.adjust
     a.shadows = round(float(data.get('shadows', 0)) * k)
@@ -372,31 +374,31 @@ BUILTIN_PRESETS = {
                      settings=Settings()),
     'smart': dict(name='Умное улучшение', group='Основные',
                   note='Исходный размер · авто свет, цвет, шум · лёгкая резкость',
-                  settings=Settings(sharpen='screen', sharpen_amount='low', adjust=_auto(70))),
+                  settings=Settings(sharpen='screen', sharpen_amount='low', adjust=_auto(90))),
     'archive_tiff': dict(name='Архив TIFF 16 бит', group='Основные',
                          note='Исходный размер · TIFF 16 бит без потерь · без коррекции',
                          settings=Settings(format='TIFF', bit_depth=16)),
     'lab_10x15': dict(name='Фотолаборатория 10×15', group='Печать',
                       note='102×152 мм · 300 PPI · заполнение · авто · глянец',
-                      settings=Settings(size_mode='print', sharpen='glossy', adjust=_auto(60))),
+                      settings=Settings(size_mode='print', sharpen='glossy', adjust=_auto(80))),
     'lab_15x21': dict(name='Фотолаборатория 15×21', group='Печать',
                       note='152×216 мм · 300 PPI · заполнение · авто · глянец',
-                      settings=Settings(size_mode='print', width_mm=152, height_mm=216, sharpen='glossy', adjust=_auto(60))),
+                      settings=Settings(size_mode='print', width_mm=152, height_mm=216, sharpen='glossy', adjust=_auto(80))),
     'lab_20x30': dict(name='Фотолаборатория 20×30', group='Печать',
                       note='203×305 мм · 300 PPI · заполнение · авто · глянец',
-                      settings=Settings(size_mode='print', width_mm=203, height_mm=305, sharpen='glossy', adjust=_auto(60))),
+                      settings=Settings(size_mode='print', width_mm=203, height_mm=305, sharpen='glossy', adjust=_auto(80))),
     'home_a4_matte': dict(name='Домашний принтер A4 · мат', group='Печать',
                           note='210×297 мм · весь кадр · резкость для матовой · +8% яркости',
                           settings=Settings(size_mode='print', width_mm=210, height_mm=297, fit='contain',
-                                            sharpen='matte', print_brightness=8, adjust=_auto(50))),
+                                            sharpen='matte', print_brightness=8, adjust=_auto(70))),
     'screen_4k': dict(name='Экран 4K', group='Экран и веб',
                       note='3840 px по длинной стороне · резкость для экрана',
-                      settings=Settings(size_mode='long_edge', long_edge=3840, sharpen='screen', adjust=_auto(50))),
+                      settings=Settings(size_mode='long_edge', long_edge=3840, sharpen='screen', adjust=_auto(70))),
     'web': dict(name='Соцсети и веб', group='Экран и веб',
                 note='2048 px · JPEG 90 · резкость для экрана',
-                settings=Settings(size_mode='long_edge', long_edge=2048, quality=90, sharpen='screen', adjust=_auto(60))),
+                settings=Settings(size_mode='long_edge', long_edge=2048, quality=90, sharpen='screen', adjust=_auto(80))),
     'upscale_small': dict(name='Увеличить маленькие фото', group='Нейросеть',
-                          note='Real-ESRGAN ×4 · 20×30 при 300 PPI · заполнение',
+                          note='Нейросеть · 20×30 при 300 PPI · заполнение',
                           settings=Settings(size_mode='print', width_mm=203, height_mm=305, sharpen='glossy',
-                                            upscaler='esrgan', adjust=_auto(50))),
+                                            neural=True, adjust=_auto(70))),
 }

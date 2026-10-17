@@ -19,7 +19,8 @@ def _style_assets():
     chevron = icons.write_svg(folder / 'chevron.svg', 'chevron_down', T['text2'])
     check = icons.write_svg(folder / 'check.svg', 'check', '#ffffff', 3)
     up = icons.write_svg(folder / 'chevron_up.svg', 'chevron_up', T['text2'])
-    return chevron, check, up
+    check_accent = icons.write_svg(folder / 'check_accent.svg', 'check', T['accent_hover'], 2.6)
+    return chevron, check, up, check_accent
 
 
 def setup(app):

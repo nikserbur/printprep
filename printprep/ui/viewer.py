@@ -114,6 +114,8 @@ class Viewer(QWidget):
         self.loading_aspect = 1.5
         self.status_text = ''
         self.status_progress = None
+        self.view_mode = 'result'            # result | split | original
+        self.neural_badge = None             # (text, progress fraction or None)
         self.status_visible = False
         self._drag = None
         self.crop = None                    # dict(image, k, rect(x0,y0,x1,y1) norm, ratio)
@@ -197,10 +199,19 @@ class Viewer(QWidget):
             self.roi_timer.start()
 
     def set_compare(self, on):
-        self.compare = on
+        self.set_view_mode('split' if on else 'result')
+
+    def set_view_mode(self, mode):
+        self.view_mode = mode
+        self.compare = mode == 'split'
         self.update()
         if self.zoom != 'fit':
             self.roi_timer.start()
+
+    def set_neural_badge(self, text=None, progress=None):
+        self.neural_badge = (text, progress) if text else None
+        self._update_anim()
+        self.update()
 
     def set_safe_zone(self, px_per_mm, mm=3):
         self.safe = (px_per_mm, mm) if px_per_mm else None
@@ -306,6 +317,8 @@ class Viewer(QWidget):
             self._paint_image(p)
         if self.status_visible and self.status_text:
             self._paint_status(p)
+        if self.neural_badge and self.mode in ('image', 'loading'):
+            self._paint_neural(p)
 
     def _paint_skeleton(self, p):
         avail_w, avail_h = self.width() - 2 * self.PAD, self.height() - 2 * self.PAD
@@ -341,7 +354,10 @@ class Viewer(QWidget):
         p.setPen(Qt.PenStyle.NoPen)
         shadow = disp.adjusted(-1, -1, 1, 1)
         p.fillRect(shadow, QColor(0, 0, 0, 90))
-        if self.compare and self.fit_before is not None:
+        if self.view_mode == 'original' and self.fit_before is not None:
+            self._draw_layer(p, disp, self.fit_before, self.roi_before)
+            self._pill(p, 'Исходник · без обработки', QPointF(self.width() / 2, 26))
+        elif self.compare and self.fit_before is not None:
             split_x = self.width() * self.split
             p.save()
             p.setClipRect(QRectF(0, 0, split_x, self.height()))
@@ -354,6 +370,10 @@ class Viewer(QWidget):
             self._paint_split(p, split_x)
         else:
             self._draw_layer(p, disp, self.fit_img, self.roi_img)
+        if self.zoom != 'fit':
+            text = ('1:1 — пиксель файла = пиксель экрана' if float(self.zoom) == 1
+                    else f'{float(self.zoom):g}:1 — увеличено для проверки деталей')
+            self._pill(p, text, None, bottom_left=True)
         if self.safe and self.zoom == 'fit':
             px_mm, mm = self.safe
             s = disp.width() / self.canvas[0]
@@ -364,6 +384,44 @@ class Viewer(QWidget):
                 p.setPen(pen)
                 p.setBrush(Qt.BrushStyle.NoBrush)
                 p.drawRect(disp.adjusted(inset, inset, -inset, -inset))
+
+    def _pill(self, p, text, centre=None, bottom_left=False):
+        f = QFont(self.font())
+        f.setPointSizeF(8.5)
+        p.setFont(f)
+        w = p.fontMetrics().horizontalAdvance(text) + 22
+        if bottom_left:
+            r = QRectF(14, self.height() - 38, w, 24)
+        else:
+            r = QRectF(centre.x() - w / 2, centre.y() - 12, w, 24)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(16, 17, 20, 215))
+        p.drawRoundedRect(r, 12, 12)
+        p.setPen(QColor(T['text']))
+        p.drawText(r, Qt.AlignmentFlag.AlignCenter, text)
+
+    def _paint_neural(self, p):
+        text, progress = self.neural_badge
+        f = QFont(self.font())
+        f.setPointSizeF(8.75)
+        p.setFont(f)
+        tw = p.fontMetrics().horizontalAdvance(text)
+        w, h = tw + 50, 40 if progress is not None else 30
+        r = QRectF(self.width() - w - 16, self.height() - h - 16, w, h)
+        p.setPen(QPen(QColor(155, 107, 255, 120), 1))
+        p.setBrush(QColor(22, 18, 34, 235))
+        p.drawRoundedRect(r, 12, 12)
+        c = QPointF(r.left() + 18, r.top() + 15)
+        p.drawPixmap(QRectF(c.x() - 8, c.y() - 8, 16, 16).toRect(), icons.pixmap('cpu', '#b591ff', 16))
+        p.setPen(QColor('#e9e1ff'))
+        p.drawText(QRectF(r.left() + 32, r.top(), tw + 10, 30), Qt.AlignmentFlag.AlignVCenter, text)
+        if progress is not None:
+            bar = QRectF(r.left() + 32, r.top() + 28, w - 44, 4)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(255, 255, 255, 28))
+            p.drawRoundedRect(bar, 2, 2)
+            p.setBrush(QColor('#9b6bff'))
+            p.drawRoundedRect(QRectF(bar.left(), bar.top(), bar.width() * max(.02, min(1, progress)), 4), 2, 2)
 
     def _paint_split(self, p, x):
         p.setPen(QPen(QColor(255, 255, 255, 220), 1.5))

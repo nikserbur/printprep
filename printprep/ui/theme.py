@@ -1,26 +1,36 @@
 """Design tokens and the application style sheet.
 
-Neutral greys only around photos (no tinted chrome that biases colour judgement,
-cf. ISO 12646); a single blue accent marks interactive/selected state.
+Neutral greys around photos (no tinted chrome that biases colour judgement, cf. ISO
+12646). Blue marks interaction and selection; each inspector area has its own accent
+(size — blue, light — amber, detail — teal, style — pink, neural — violet, output —
+green) used only on small icon chips, so the eye finds sections instantly without
+colouring the area around the image.
 """
 from PySide6.QtGui import QColor, QFont, QPalette
 
 T = dict(
-    bg='#141518', panel='#1c1d21', raised='#24252a', hover='#2c2d33', press='#33353c',
-    border='#2f3137', border_strong='#3d4048', text='#e9eaee', text2='#b0b3bc', text3='#7d818b',
-    accent='#4c8dff', accent_hover='#669eff', accent_press='#3b7af0', accent_soft='rgba(76,141,255,0.16)',
-    accent_text='#ffffff', success='#3ccf8a', warning='#f2b14a', danger='#ff6b6b',
-    viewer_dark='#0f1012', viewer_gray='#767676', viewer_light='#d6d6d6',
+    bg='#111214', panel='#18191c', raised='#202125', hover='#292a2f', press='#313238',
+    border='#2a2b30', border_strong='#3a3c43', text='#eeeef1', text2='#aeb1ba', text3='#757984',
+    accent='#3d8bfd', accent_hover='#5b9dff', accent_press='#2f78e6', accent_soft='rgba(61,139,253,0.16)',
+    accent_text='#ffffff', success='#34c77b', warning='#f5a524', danger='#ff5d5d',
+    viewer_dark='#0c0d0f', viewer_gray='#767676', viewer_light='#d6d6d6',
 )
+ACCENTS = dict(size='#3d8bfd', light='#f5a524', detail='#22c3a6', style='#e45fae', neural='#9b6bff',
+               output='#34c77b', photo='#5b9dff', preset='#3d8bfd')
 RADIUS = 8
 FONT_FAMILY = 'Segoe UI Variable Text'
 
 
 def color(name, alpha=None):
-    c = QColor(T[name]) if not T[name].startswith('rgba') else QColor(76, 141, 255, 41)
+    c = QColor(T[name]) if not T[name].startswith('rgba') else QColor(61, 139, 253, 41)
     if alpha is not None:
         c.setAlphaF(alpha)
     return c
+
+
+def rgba(hex_color, alpha):
+    c = QColor(hex_color)
+    return f'rgba({c.red()},{c.green()},{c.blue()},{alpha})'
 
 
 def app_font():
@@ -83,6 +93,7 @@ QPushButton#Primary:disabled { background: #2a3a58; border-color: #2a3a58; color
 QPushButton#Ghost { background: transparent; border-color: transparent; color: %(text2)s; }
 QPushButton#Ghost:hover { background: %(hover)s; color: %(text)s; }
 QPushButton#Danger { color: %(danger)s; }
+QPushButton#Danger:disabled { color: %(text3)s; }
 QPushButton#Link { background: transparent; border: none; color: %(accent)s; padding: 2px 4px; }
 QPushButton#Link:hover { color: %(accent_hover)s; text-decoration: underline; }
 
@@ -116,9 +127,16 @@ QComboBox QAbstractItemView {
 QComboBox QAbstractItemView::item { min-height: 28px; padding: 4px 10px; border-radius: 6px; }
 QComboBox QAbstractItemView::item:hover { background: %(hover)s; }
 
+QPushButton#Dropdown { text-align: left; padding: 5px 30px 5px 10px; background: %(raised)s; border: 1px solid %(border_strong)s;
+    border-radius: 7px; font-weight: 400; min-height: 20px; }
+QPushButton#Dropdown:hover { border-color: #50535c; background: %(hover)s; }
+QPushButton#Dropdown:focus { border-color: %(accent)s; }
 QMenu { background: %(raised)s; border: 1px solid %(border_strong)s; border-radius: 10px; padding: 5px; }
-QMenu::item { padding: 7px 26px 7px 12px; border-radius: 6px; color: %(text)s; }
+QMenu::item { padding: 7px 28px 7px 30px; border-radius: 6px; color: %(text)s; }
 QMenu::item:selected { background: %(accent_soft)s; }
+QMenu::item:checked { color: %(accent_hover)s; font-weight: 600; }
+QMenu::indicator { width: 14px; height: 14px; left: 9px; }
+QMenu::indicator:checked { image: url(%(check_accent)s); }
 QMenu::item:disabled { color: %(text3)s; }
 QMenu::separator { height: 1px; background: %(border)s; margin: 5px 8px; }
 QMenu::icon { padding-left: 8px; }
@@ -151,5 +169,5 @@ QInputDialog QLineEdit { min-width: 320px; }
 '''
 
 
-def stylesheet(chevron_path, check_path, chevron_up_path):
-    return STYLE % dict(T, chevron=chevron_path, check=check_path, chevron_up=chevron_up_path)
+def stylesheet(chevron_path, check_path, chevron_up_path, check_accent_path):
+    return STYLE % dict(T, chevron=chevron_path, check=check_path, chevron_up=chevron_up_path, check_accent=check_accent_path)

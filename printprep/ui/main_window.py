@@ -24,11 +24,36 @@ from .controls import Chip, FlowRow, Segmented, Spinner, Toast, button, label, t
 from .filmstrip import Filmstrip
 from .inspector import Inspector
 from .presets_panel import PresetPanel
-from .services import ExportJob, PreviewRequest, RenderService, ThumbnailLoader, batch_summary
+from .services import ExportJob, NeuralWorker, PreviewRequest, RenderService, ThumbnailLoader, batch_summary
+from .preset_manager import PresetManager
 from .theme import T
 from .viewer import Viewer
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def preset_summary(s: Settings):
+    from ..model import LOOKS
+    if s.size_mode == 'original':
+        size = ['Исходный размер']
+    elif s.size_mode == 'long_edge':
+        size = [f'{s.long_edge} px по стороне']
+    elif s.size_mode == 'pixels':
+        size = [f'{s.pixel_width}×{s.pixel_height} px']
+    else:
+        size = [f'{s.width_mm:g}×{s.height_mm:g} мм', f'{s.dpi} PPI']
+    parts = size + [s.format + (f' {s.quality}' if s.format == 'JPEG' else f' {s.bit_depth} бит')]
+    if s.adjust.auto:
+        parts.append(f'Авто {s.adjust.auto_strength:.0f}%')
+    if s.adjust.look != 'none':
+        parts.append(LOOKS[s.adjust.look][0])
+    if s.neural:
+        parts.append('Нейросеть')
+    if s.sharpen != 'off':
+        parts.append({'screen': 'Резкость: экран', 'glossy': 'Резкость: глянец', 'matte': 'Резкость: мат'}[s.sharpen])
+    if s.output_space == 'ICC':
+        parts.append('ICC принтера')
+    return parts
 
 
 def copy_settings(s: Settings):
@@ -82,7 +107,8 @@ class MainWindow(QMainWindow):
         self.library = PresetLibrary(self.data_dir)
         self.library.migrate_qsettings(QSettings('PrintPrep', 'PrintPrep'))
         self.cache = AnalysisCache()
-        self.service = RenderService(self.cache, self)
+        self.neural = NeuralWorker(self)
+        self.service = RenderService(self.cache, self.neural, self)
         self.thumbs = ThumbnailLoader(self)
         self.folder = None
         self.photos = []
@@ -92,7 +118,8 @@ class MainWindow(QMainWindow):
         self.active_id = 'builtin:original'
         self.scope = 'batch'
         self.crop_mode = False
-        self.compare = False
+        self.view_mode = 'split'
+        self.neural_progress = {}
         self.gen = 0
         self.fit_key = None
         self.fit_done_key = None
@@ -120,6 +147,9 @@ class MainWindow(QMainWindow):
         self.service.ready.connect(self._on_ready)
         self.service.failed.connect(self._on_failed)
         self.service.analyzed.connect(self._on_analyzed)
+        self.neural.progress.connect(self._neural_progress)
+        self.neural.done.connect(self._neural_done)
+        self.neural.failed.connect(self._neural_failed)
         self.thumbs.ready.connect(lambda gen, path, img: self.strip.set_thumb(path, img))
         self.scanned.connect(self._on_scanned)
         self.scanProgress.connect(lambda i, n: self.viewer.set_status(f'Читаем папку… {i} из {n}', i / max(1, n)))
@@ -140,8 +170,8 @@ class MainWindow(QMainWindow):
         self.split.setChildrenCollapsible(False)
         self.split.setHandleWidth(1)
         self.presets = PresetPanel()
-        self.presets.setMinimumWidth(220)
-        self.presets.setMaximumWidth(340)
+        self.presets.setMinimumWidth(240)
+        self.presets.setMaximumWidth(360)
         self.presets.applyRequested.connect(self.apply_preset)
         self.presets.saveRequested.connect(self.save_preset)
         self.presets.saveAsRequested.connect(self.save_preset_as)
@@ -151,6 +181,7 @@ class MainWindow(QMainWindow):
         self.presets.duplicateRequested.connect(self.duplicate_preset)
         self.presets.exportRequested.connect(self.export_preset_file)
         self.presets.importRequested.connect(self.import_preset_file)
+        self.presets.manageRequested.connect(self.manage_presets)
         self.split.addWidget(self.presets)
         center = QWidget()
         cl = QVBoxLayout(center)
@@ -181,12 +212,14 @@ class MainWindow(QMainWindow):
         self.inspector.editEdited.connect(self._edit_edited)
         self.inspector.action.connect(self._inspector_action)
         self.inspector.scopeChanged.connect(self._scope_changed)
+        self.inspector.presetAction.connect(self._preset_action)
         self.split.addWidget(self.inspector)
         self.split.setStretchFactor(0, 0)
         self.split.setStretchFactor(1, 1)
         self.split.setStretchFactor(2, 0)
-        self.split.setSizes([250, 900, 360])
+        self.split.setSizes([264, 900, 372])
         outer.addWidget(self.split, 1)
+        outer.addWidget(self._status_bar())
         self.toast = Toast(root)
 
     def _top_bar(self):
@@ -273,20 +306,27 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout(bar)
         row.setContentsMargins(12, 8, 12, 6)
         row.setSpacing(6)
-        self.zoom_seg = Segmented([('Вписать', 'fit', 'Весь кадр (Пробел)'), ('100%', 1.0, 'Пиксель в пиксель: видны резкость и нейросеть'),
-                                   ('200%', 2.0, 'Увеличение для проверки деталей')], compact=True)
+        self.view_seg = Segmented([('Результат', 'result', 'Только обработанный снимок'),
+                                   ('До / после', 'split', 'Шторка: слева исходник, справа результат. Тяните шторку мышью (\\)'),
+                                   ('Исходник', 'original', 'Снимок без обработки в том же кадре')], compact=True)
+        self.view_seg.changed.connect(self.set_view_mode)
+        row.addWidget(self.view_seg)
+        row.addSpacing(4)
+        self.zoom_seg = Segmented([('По окну', 'fit', 'Весь кадр в окне (Пробел)'),
+                                   ('1:1', 1.0, 'Масштаб 1:1 — один пиксель файла на один пиксель экрана.\n'
+                                                'Так видны реальная резкость, шум и работа нейросети.'),
+                                   ('2:1', 2.0, 'Увеличение вдвое — для проверки мелких деталей')], compact=True)
         self.zoom_seg.setValue('fit')
         self.zoom_seg.changed.connect(lambda z: self.viewer.set_zoom(z))
         row.addWidget(self.zoom_seg)
         row.addSpacing(6)
-        self.compare_btn = tool('compare', 'До / после — шторка (\\)', self.set_compare, checkable=True)
         self.crop_tool = tool('crop', 'Кадрирование этого снимка (C)', lambda on: self.set_crop_mode(on), checkable=True)
         self.rot_l = tool('rotate_left', 'Повернуть против часовой (Ctrl+[)', lambda: self.rotate(-90))
         self.rot_r = tool('rotate_right', 'Повернуть по часовой (Ctrl+])', lambda: self.rotate(90))
         self.safe_btn = tool('safe', 'Безопасная зона печати: 3 мм от края', self._toggle_safe, checkable=True)
         self.proof_btn = tool('eye', 'Экранная проба ICC-профиля', self._toggle_proof, checkable=True)
         self.gamut_btn = tool('warning', 'Показать цвета вне охвата принтера', self._toggle_proof, checkable=True)
-        for w in (self.compare_btn, self.crop_tool, self.rot_l, self.rot_r, self.safe_btn, self.proof_btn, self.gamut_btn):
+        for w in (self.crop_tool, self.rot_l, self.rot_r, self.safe_btn, self.proof_btn, self.gamut_btn):
             row.addWidget(w)
         self.crop_done = button('Готово', lambda: self.set_crop_mode(False), 'Primary', 'check')
         self.crop_done.hide()
@@ -306,6 +346,25 @@ class MainWindow(QMainWindow):
         self.bg_seg.setFixedWidth(100)
         self.bg_seg.changed.connect(self._set_background)
         row.addWidget(self.bg_seg)
+        return bar
+
+    def _status_bar(self):
+        bar = QFrame()
+        bar.setObjectName('StatusBar')
+        bar.setFixedHeight(26)
+        bar.setStyleSheet(f'#StatusBar {{ background: {T["panel"]}; border-top: 1px solid {T["border"]}; }}'
+                          f'#StatusBar QLabel {{ color: {T["text3"]}; font-size: 11px; }}')
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(14, 0, 14, 0)
+        row.setSpacing(18)
+        self.status_file = QLabel('')
+        self.status_render = QLabel('')
+        self.status_neural = QLabel('')
+        self.status_cpu = QLabel(f'Процессор: {os.cpu_count() or 1} потоков · работа локально, без интернета')
+        row.addWidget(self.status_file, 1)
+        row.addWidget(self.status_neural)
+        row.addWidget(self.status_render)
+        row.addWidget(self.status_cpu)
         return bar
 
     def _info_bar(self):
@@ -335,7 +394,7 @@ class MainWindow(QMainWindow):
         sc('Left', lambda: self._nav_key(-1))
         sc('Space', self._toggle_zoom)
         sc('Z', self._toggle_zoom)
-        sc('\\', lambda: self.compare_btn.toggle())
+        sc('\\', lambda: self.set_view_mode('result' if self.view_mode == 'split' else 'split'))
         sc('C', lambda: self.crop_tool.toggle())
         sc('Ctrl+[', lambda: self.rotate(-90))
         sc('Ctrl+]', lambda: self.rotate(90))
@@ -368,6 +427,9 @@ class MainWindow(QMainWindow):
         bg = self.store.value('viewer_bg', 'dark')
         self.bg_seg.setValue(bg)
         self.viewer.set_background(bg)
+        self.view_mode = self.store.value('view_mode', 'split') or 'split'
+        self.view_seg.setValue(self.view_mode)
+        self.viewer.set_view_mode(self.view_mode)
         try:
             saved = self.store.value('settings')
             if saved:
@@ -415,6 +477,7 @@ class MainWindow(QMainWindow):
         if self.scan_worker:
             self.scan_worker.cancelled = True
         self.thumbs.stop()
+        self.neural.stop()
         self.service.stop()
         e.accept()
 
@@ -505,6 +568,9 @@ class MainWindow(QMainWindow):
         self.fit_done_key = None
         if self.crop_mode:
             self.set_crop_mode(False)
+        self.viewer.set_neural_badge(None)
+        self.status_file.setText(f'{photo.path.name} · {photo.size[0]} × {photo.size[1]} px · {photo.megapixels:.1f} Мп · '
+                                 f'{photo.bits} бит · {photo.profile}')
         self._sync_inspector()
         self._update_info()
         self._schedule(0)
@@ -577,7 +643,7 @@ class MainWindow(QMainWindow):
         self._after_change(commit, interactive=not commit)
 
     def _after_change(self, commit, interactive=False):
-        self.presets.set_state(self.active_id, self._dirty())
+        self._update_preset_card()
         if commit:
             self._commit()
         p = self.photo()
@@ -598,9 +664,16 @@ class MainWindow(QMainWindow):
             offsets, _ = auto_values(analysis, self.settings.adjust, assess(p.size, self.settings, self.edit())['scale'])
         self.inspector.set_state(self.settings, self.edit(), p, analysis, offsets)
 
+    def _update_preset_card(self):
+        preset = self.library.get(self.active_id)
+        dirty = self._dirty()
+        own = bool(preset and not preset.builtin)
+        self.inspector.set_preset_info(preset.name if preset else 'Свои настройки', dirty, own, preset_summary(self.settings))
+        self.presets.set_state(self.active_id, dirty)
+
     def _sync_all(self):
         self._sync_inspector()
-        self.presets.set_state(self.active_id, self._dirty())
+        self._update_preset_card()
         n = len(self.photos)
         if self.folder:
             self.folder_sub.setText(f'{n} фото · {self.folder}' if n else str(self.folder))
@@ -610,7 +683,7 @@ class MainWindow(QMainWindow):
         self.badge_timer.start()
         has = self.photo() is not None
         self.strip_box.setVisible(bool(self.photos))
-        for w in (self.zoom_seg, self.compare_btn, self.crop_tool, self.rot_l, self.rot_r, self.safe_btn):
+        for w in (self.zoom_seg, self.view_seg, self.crop_tool, self.rot_l, self.rot_r, self.safe_btn):
             w.setEnabled(has)
         icc = self.settings.output_space == 'ICC'
         self.proof_btn.setVisible(icc)
@@ -676,9 +749,15 @@ class MainWindow(QMainWindow):
         for text in info['warnings']:
             if 'PPI' not in text:
                 self.info_flow.add(Chip(text, 'warning'))
+        from ..model import NEURAL_MIN_SCALE
+        from ..pipeline import neural_wanted
+        if info['scale'] >= NEURAL_MIN_SCALE and not neural_wanted(self.settings, self.edit()) and p.megapixels <= 4:
+            self.info_flow.add(Chip('Мало разрешения — поможет нейросеть', 'neural'))
         for text in notes or []:
-            kind = 'accent' if 'применена' in text else 'neutral'
-            self.info_flow.add(Chip(text, kind))
+            if 'Нейросеть применена' in text:
+                self.info_flow.add(Chip('Нейросеть ✓', 'neural'))
+            elif not text.startswith('Нейросеть'):
+                self.info_flow.add(Chip(text, 'neutral'))
         e = self.edit()
         if e and not e.is_default():
             self.info_flow.add(Chip('есть правки снимка', 'accent'))
@@ -690,7 +769,7 @@ class MainWindow(QMainWindow):
             return None
         e = self.edit() or Edit()
         return (str(p.path), json.dumps(self.settings.to_dict(), sort_keys=True), json.dumps(e.to_dict(), sort_keys=True),
-                self.compare, self.proof_btn.isChecked(), self.gamut_btn.isChecked())
+                self.view_mode != 'result', self.proof_btn.isChecked(), self.gamut_btn.isChecked())
 
     def _schedule(self, delay=0, interactive=False):
         if not self.photo():
@@ -712,7 +791,7 @@ class MainWindow(QMainWindow):
         self.gen += 1
         self.fit_key = key
         self.service.request(PreviewRequest(self.gen, p, copy_settings(self.settings), copy_edit(self.edit() or Edit()), 'fit',
-                                            target, None, self.compare, self.proof_btn.isChecked(), self.gamut_btn.isChecked()))
+                                            target, None, self.view_mode != 'result', self.proof_btn.isChecked(), self.gamut_btn.isChecked()))
         if getattr(self, '_interactive', False):
             self._interactive = False
             self.preview_timer.start(260)
@@ -724,7 +803,7 @@ class MainWindow(QMainWindow):
         self.gen += 1
         self.roi_key = (self._key(), region)
         self.service.request(PreviewRequest(self.gen, p, copy_settings(self.settings), copy_edit(self.edit() or Edit()), 'roi',
-                                            0, region, self.compare, self.proof_btn.isChecked(), self.gamut_btn.isChecked()))
+                                            0, region, self.view_mode != 'result', self.proof_btn.isChecked(), self.gamut_btn.isChecked()))
 
     def _request_crop_image(self):
         p = self.photo()
@@ -770,13 +849,63 @@ class MainWindow(QMainWindow):
             self.viewer.set_canvas(result.canvas)
             self.viewer.set_fit(result.image, result.before)
             self.fit_done_key = self.fit_key
+            if result.hist:
+                self.inspector.set_histogram(result.hist)
         else:
             self.viewer.set_roi(result.image, result.region, result.before)
             if self.fit_done_key != self._key():
                 self._schedule(0)
         self.last_result = result
+        self._show_neural_state(result.neural, result.neural_reason)
         self._update_info(result.notes)
         self.time_label.setText(f'{result.seconds * 1000:.0f} мс')
+        self.status_render.setText(f'Просмотр: {result.seconds * 1000:.0f} мс')
+
+    # ================================================================= neural
+    def _enhance_key(self):
+        p = self.photo()
+        if not p:
+            return None
+        e = self.edit() or Edit()
+        return p.key + (e.rotation % 360, round(e.angle, 3))
+
+    def _show_neural_state(self, state, reason=''):
+        key = self._enhance_key()
+        if state == 'pending' and key in self.neural_progress:
+            f, eta = self.neural_progress[key]
+            self.inspector.set_neural_state('running', progress=f, eta=eta)
+            self.viewer.set_neural_badge(self._neural_text(f, eta), f)
+            return
+        self.inspector.set_neural_state(state, reason)
+        if state == 'pending':
+            self.viewer.set_neural_badge('Нейросеть: готовим улучшение снимка…', 0.)
+        else:
+            self.viewer.set_neural_badge(None)
+
+    @staticmethod
+    def _neural_text(f, eta):
+        return f'Нейросеть улучшает снимок · {f * 100:.0f}%' + (f' · ещё ≈ {eta:.0f} с' if eta >= 1 else '')
+
+    def _neural_progress(self, key, fraction, eta):
+        self.neural_progress[key] = (fraction, eta)
+        self.status_neural.setText(f'Нейросеть: {fraction * 100:.0f}%')
+        if key == self._enhance_key():
+            self.inspector.set_neural_state('running', progress=fraction, eta=eta)
+            self.viewer.set_neural_badge(self._neural_text(fraction, eta), fraction)
+
+    def _neural_done(self, key):
+        self.neural_progress.pop(key, None)
+        self.status_neural.setText('Нейросеть: готово')
+        if key == self._enhance_key():
+            self.viewer.set_neural_badge(None)
+            self.viewer.clear_roi()
+            self._schedule(0)
+
+    def _neural_failed(self, key, text):
+        self.neural_progress.pop(key, None)
+        self.viewer.set_neural_badge(None)
+        self.status_neural.setText('Нейросеть: ошибка')
+        self.toast.show_message('Нейросеть не смогла обработать снимок', text, 'danger')
 
     def _zoom_changed(self, zoom):
         self.zoom_seg.setValue(zoom)
@@ -785,9 +914,11 @@ class MainWindow(QMainWindow):
         if self.photo() and not self.crop_mode:
             self.viewer.set_zoom(1.0 if self.viewer.zoom == 'fit' else 'fit')
 
-    def set_compare(self, on):
-        self.compare = on
-        self.viewer.set_compare(on)
+    def set_view_mode(self, mode):
+        self.view_mode = mode
+        self.view_seg.setValue(mode)
+        self.viewer.set_view_mode(mode)
+        self.store.setValue('view_mode', mode)
         self._schedule(0)
 
     def _toggle_safe(self, on):
@@ -825,7 +956,7 @@ class MainWindow(QMainWindow):
         self.inspector.set_crop_mode(on)
         self.crop_done.setVisible(on)
         self.zoom_seg.setEnabled(not on)
-        self.compare_btn.setEnabled(not on)
+        self.view_seg.setEnabled(not on)
         if on:
             self.viewer.set_zoom('fit')
             self.viewer.set_status('Подготавливаем кадрирование…')
@@ -934,6 +1065,27 @@ class MainWindow(QMainWindow):
     # ================================================================= presets
     def _refresh_presets(self):
         self.presets.set_presets(self.library.all(), self.active_id, self._dirty())
+        self._update_preset_card()
+
+    def _preset_action(self, name):
+        pid = self.active_id
+        actions = {
+            'save': self.save_preset, 'save_as': self.save_preset_as, 'revert': self.revert_preset,
+            'rename': lambda: self.rename_preset(pid), 'delete': lambda: self.delete_preset(pid),
+            'duplicate': lambda: self.duplicate_preset(pid) if pid else self.save_preset_as(),
+            'export': lambda: self.export_preset_file(pid or ''), 'import': self.import_preset_file,
+            'manage': self.manage_presets,
+        }
+        actions[name]()
+
+    def manage_presets(self):
+        dialog = PresetManager(self.library, self.active_id, self)
+        dialog.exec()
+        if self.active_id and self.library.get(self.active_id) is None:
+            self.active_id = None
+        self._refresh_presets()
+        if dialog.apply_id:
+            self.apply_preset(dialog.apply_id)
 
     def apply_preset(self, pid):
         preset = self.library.get(pid)
@@ -1089,7 +1241,7 @@ class MainWindow(QMainWindow):
         self.progress_text.setText(f'Готово {done} из {total} · {Path(row["source"]).name}')
 
     def _export_file_progress(self, path, fraction):
-        if self.settings.upscaler != 'off':
+        if self.settings.neural:
             self.progress_text.setText(f'Нейросеть: {Path(path).name} · {fraction * 100:.0f}%')
 
     def cancel_export(self):

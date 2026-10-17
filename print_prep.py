@@ -24,8 +24,8 @@ def self_test():
             assert im.size == (1795, 1205), im.size
             assert im.info.get('icc_profile')
         tile = np.random.default_rng(0).random((24, 24, 3)).astype(np.float32)
-        assert neural.upscale(tile, 'fsrcnn').shape == (48, 48, 3)
-        assert neural.upscale(tile, 'esrgan').shape == (96, 96, 3)
+        assert neural.upscale(tile).shape == (96, 96, 3)
+        assert neural.enhance((tile * 255).astype(np.uint8))['full'].shape == (96, 96, 3)
         neural.detect_faces(np.zeros((120, 160, 3), np.uint8))
         from PySide6.QtWidgets import QApplication
         from PySide6.QtCore import QCoreApplication, QEvent

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter
-from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QListWidget, QListWidgetItem, QMenu, QStyle,
+from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QListWidget, QListWidgetItem, QMenu, QPushButton, QStyle,
                                QStyledItemDelegate, QVBoxLayout, QWidget)
 
 from . import icons
@@ -69,18 +69,20 @@ class PresetDelegate(QStyledItemDelegate):
         name = preset.name
         if active and self.panel.dirty:
             name += '  •'
-        title_rect = card.adjusted(14, 7, -10, -card.height() / 2)
+        reserve = 34 if (hover or active) else 10
+        title_rect = card.adjusted(14, 7, -reserve, -card.height() / 2)
         p.drawText(title_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                    p.fontMetrics().elidedText(name, Qt.TextElideMode.ElideRight, int(title_rect.width())))
-        if active and self.panel.dirty:
-            p.setPen(QColor(T['warning']))
         f2 = QFont(option.font)
         f2.setPointSizeF(8.25)
         p.setFont(f2)
         p.setPen(QColor(T['text3']))
-        note_rect = card.adjusted(14, card.height() / 2, -10, -6)
+        note_rect = card.adjusted(14, card.height() / 2, -reserve, -6)
         p.drawText(note_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                    p.fontMetrics().elidedText(preset.note, Qt.TextElideMode.ElideRight, int(note_rect.width())))
+        if hover or active:
+            gear = QRectF(card.right() - 28, card.center().y() - 10, 20, 20)
+            p.drawPixmap(gear.toRect(), icons.pixmap('more', T['text'] if hover else T['text3'], 20))
         p.restore()
 
 
@@ -94,6 +96,7 @@ class PresetPanel(QWidget):
     duplicateRequested = Signal(str)
     exportRequested = Signal(str)
     importRequested = Signal()
+    manageRequested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -108,15 +111,13 @@ class PresetPanel(QWidget):
         head.setContentsMargins(16, 0, 8, 0)
         head.addWidget(label('ПРЕСЕТЫ', 'Eyebrow'))
         head.addStretch()
-        self.add_btn = tool('plus', 'Сохранить текущие настройки как новый пресет', self.saveAsRequested.emit)
+        self.add_btn = QPushButton(' Новый')
+        self.add_btn.setIcon(icons.icon('plus', T['text2'], T['text']))
+        self.add_btn.setObjectName('Ghost')
+        self.add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.add_btn.setToolTip('Сохранить текущие настройки как новый пресет')
+        self.add_btn.clicked.connect(self.saveAsRequested.emit)
         head.addWidget(self.add_btn)
-        more = tool('more', 'Импорт и экспорт пресетов')
-        menu = QMenu(more)
-        menu.addAction(icons.icon('upload'), 'Импортировать пресет или рецепт…', self.importRequested.emit)
-        self.export_action = menu.addAction(icons.icon('download'), 'Экспортировать выбранный…', lambda: self.exportRequested.emit(self.active_id or ''))
-        more.setMenu(menu)
-        more.setPopupMode(more.ToolButtonPopupMode.InstantPopup)
-        head.addWidget(more)
         outer.addLayout(head)
         self.list = QListWidget()
         self.list.setItemDelegate(PresetDelegate(self))
@@ -126,27 +127,28 @@ class PresetPanel(QWidget):
         self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self._menu)
         self.list.itemClicked.connect(self._clicked)
+        self.list.viewport().installEventFilter(self)
         self.list.setAccessibleName('Список пресетов')
         outer.addWidget(self.list, 1)
-        self.dirty_bar = QWidget()
-        bar = QVBoxLayout(self.dirty_bar)
-        bar.setContentsMargins(12, 8, 12, 0)
-        bar.setSpacing(6)
-        self.dirty_label = label('Пресет изменён', 'Muted', wrap=True)
-        bar.addWidget(self.dirty_label)
-        row = QHBoxLayout()
-        row.setSpacing(6)
-        self.save_btn = button('Сохранить', self.saveRequested.emit, 'Primary', 'save')
-        self.save_as_btn = button('Как новый…', self.saveAsRequested.emit)
-        self.revert_btn = button('', self.revertRequested.emit)
-        self.revert_btn.setIcon(icons.icon('reset'))
-        self.revert_btn.setToolTip('Вернуть настройки пресета')
-        row.addWidget(self.save_btn, 1)
-        row.addWidget(self.save_as_btn, 1)
-        row.addWidget(self.revert_btn)
-        bar.addLayout(row)
-        outer.addWidget(self.dirty_bar)
-        self.dirty_bar.hide()
+        foot = QHBoxLayout()
+        foot.setContentsMargins(10, 4, 10, 0)
+        manage = QPushButton(' Управление пресетами')
+        manage.setIcon(icons.icon('layers', T['text2'], T['text']))
+        manage.setObjectName('Ghost')
+        manage.setCursor(Qt.CursorShape.PointingHandCursor)
+        manage.clicked.connect(self.manageRequested.emit)
+        foot.addWidget(manage, 1)
+        outer.addLayout(foot)
+
+    def eventFilter(self, obj, event):
+        from PySide6.QtCore import QEvent
+        if obj is self.list.viewport() and event.type() == QEvent.Type.MouseButtonRelease                 and event.button() == Qt.MouseButton.LeftButton:
+            pos = event.position().toPoint()
+            item = self.list.itemAt(pos)
+            if item and item.data(ROLE_PRESET) and pos.x() > self.list.viewport().width() - 40:
+                self._menu(pos)
+                return True
+        return super().eventFilter(obj, event)
 
     def set_presets(self, presets, active_id, dirty):
         self.presets = presets
@@ -175,16 +177,6 @@ class PresetPanel(QWidget):
 
     def set_state(self, active_id, dirty):
         self.active_id, self.dirty = active_id, dirty
-        own = bool(active_id and active_id.startswith('user:'))
-        self.dirty_bar.setVisible(bool(dirty))
-        self.save_btn.setVisible(own)
-        self.save_as_btn.setText('Как новый…' if own else 'Сохранить как…')
-        self.save_as_btn.setObjectName('' if own else 'Primary')
-        self.save_as_btn.style().unpolish(self.save_as_btn)
-        self.save_as_btn.style().polish(self.save_as_btn)
-        name = next((p.name for p in self.presets if p.id == active_id), None)
-        self.dirty_label.setText(f'«{name}» изменён — сохраните или верните.' if name else 'Свои настройки — сохраните как пресет.')
-        self.export_action.setEnabled(bool(active_id))
         self.list.viewport().update()
         for i in range(self.list.count()):
             preset = self.list.item(i).data(ROLE_PRESET)
@@ -210,4 +202,5 @@ class PresetPanel(QWidget):
             menu.addAction(icons.icon('trash'), 'Удалить…', lambda: self.deleteRequested.emit(preset.id))
         menu.addSeparator()
         menu.addAction(icons.icon('download'), 'Экспортировать в файл…', lambda: self.exportRequested.emit(preset.id))
+        menu.addAction(icons.icon('layers'), 'Управление пресетами…', self.manageRequested.emit)
         menu.exec(self.list.viewport().mapToGlobal(pos))

@@ -290,11 +290,11 @@ def effective_values(settings: Settings, edit: Edit | None, analysis, out_scale=
     adjust = combined_adjust(settings, edit)
     values = {k: float(getattr(adjust, k)) for k in NUMERIC_ADJUST}
     auto_offsets, gains = auto.auto_values(analysis, adjust, out_scale)
+    extras = {'fade': 0., 'split': 0., 'mono': 0., 'levels': auto_offsets.pop('levels', None)}
     for key, delta in auto_offsets.items():
         values[key] += delta
     look = LOOKS.get(adjust.look, LOOKS['none'])[1]
     strength = adjust.look_strength / 100
-    extras = {'fade': 0., 'split': 0., 'mono': 0.}
     for key, delta in look.items():
         if key in values:
             values[key] += delta * strength
@@ -317,18 +317,22 @@ def _needs_develop(values, gains, extras, settings):
 
 # ---------------------------------------------------------------- tone maps
 def _guided(guide, src, radius, eps):
+    """Gray-guide guided filter (He et al.) with O(1) box means; src may have channels."""
     import cv2
-    try:
-        return cv2.ximgproc.guidedFilter(guide, src, radius, eps)
-    except Exception:
-        k = 2 * radius + 1
-        mean_i = cv2.boxFilter(guide, -1, (k, k))
-        mean_p = cv2.boxFilter(src, -1, (k, k))
-        cov = cv2.boxFilter(guide * src, -1, (k, k)) - mean_i * mean_p
-        var = cv2.boxFilter(guide * guide, -1, (k, k)) - mean_i * mean_i
-        a = cov / (var + eps)
-        b = mean_p - a * mean_i
-        return cv2.boxFilter(a, -1, (k, k)) * guide + cv2.boxFilter(b, -1, (k, k))
+    k = (2 * radius + 1, 2 * radius + 1)
+    g = np.ascontiguousarray(guide, np.float32)
+    p = np.ascontiguousarray(src, np.float32)
+    mean_i = cv2.boxFilter(g, -1, k)
+    var = cv2.boxFilter(g * g, -1, k) - mean_i * mean_i
+    if p.ndim == 3:
+        g3, mi3, var3 = g[..., None], mean_i[..., None], var[..., None]
+    else:
+        g3, mi3, var3 = g, mean_i, var
+    mean_p = cv2.boxFilter(p, -1, k)
+    cov = cv2.boxFilter(np.ascontiguousarray(g3 * p), -1, k) - mi3 * mean_p
+    a = cov / (var3 + eps)
+    b = mean_p - a * mi3
+    return cv2.boxFilter(np.ascontiguousarray(a, np.float32), -1, k) * g3 + cv2.boxFilter(np.ascontiguousarray(b, np.float32), -1, k)
 
 
 def compute_maps(proxy_base, geom: Geometry, values, gains):
@@ -384,7 +388,7 @@ def _dehaze(lin, amount, t, atmosphere):
 
 # ---------------------------------------------------------------- develop
 def _tone_lut(values, extras, settings):
-    """Global curve on perceptual lightness: shoulder → contrast → whites/blacks → fade → print."""
+    """Global curve on perceptual lightness: shoulder → auto levels → contrast → whites/blacks → fade → print."""
     ev = values['exposure']
     pmax = max(1., float(encode(np.float32(2 ** max(0., ev)))))
     pmax *= 1 + .3 * max(0., values['highlights']) / 100 + .12 * max(0., values['clarity']) / 100
@@ -395,6 +399,9 @@ def _tone_lut(values, extras, settings):
         a = (pmax - knee) / (1 - knee)
         t = np.clip((xs - knee) / (pmax - knee), 0, 1)
         y = np.where(xs > knee, knee + (1 - knee) * (t * a / (1 + (a - 1) * t)), xs)
+    if extras.get('levels'):
+        lb, lw = extras['levels']
+        y = np.maximum(0, (y - lb) / max(.3, lw - lb))
     c = values['contrast'] / 100
     if c:
         m = .46
@@ -403,12 +410,14 @@ def _tone_lut(values, extras, settings):
         y = np.where(yc < m, m * np.power(yc / m, g), 1 - (1 - m) * np.power((1 - yc) / (1 - m), g))
     b, w = values['blacks'] / 100, values['whites'] / 100
     if b > 0:
-        y = y + b * .1 * np.power(np.clip(1 - y, 0, 1), 3)
+        y = y + b * .12 * np.power(np.clip(1 - y, 0, 1), 3)
     elif b < 0:
-        d = -b * .06
+        d = -b * .1
         y = np.maximum(0, (y - d) / (1 - d))
-    if w:
-        y = y + w * .12 * np.power(np.clip(y, 0, 1), 3)
+    if w > 0:
+        y = y / (1 - w * .18)                          # lower white point: brightest tones clip, like Lightroom
+    elif w < 0:
+        y = y * (1 + w * .15)
     if extras.get('fade'):
         y = y + extras['fade'] / 100 * .12 * np.power(np.clip(1 - y, 0, 1), 2)
     if settings.print_brightness:
@@ -548,10 +557,38 @@ def _to_float(block):
     return block.astype(np.float32) / (255 if block.dtype == np.uint8 else 65535)
 
 
-def neural_kind(settings, edit):
-    if edit is not None and edit.neural is not None:
-        return settings.upscaler if edit.neural and settings.upscaler != 'off' else ('esrgan' if edit.neural else 'off')
-    return settings.upscaler
+def neural_wanted(settings: Settings, edit: Edit | None):
+    edit = edit or Edit()
+    return edit.neural if edit.neural is not None else settings.neural
+
+
+def neural_status(source: Source, settings: Settings, edit: Edit | None, geom: Geometry):
+    """(applies, reason). The network runs only where it visibly helps a print."""
+    from .model import NEURAL_MAX_MP, NEURAL_MIN_SCALE
+    if not neural_wanted(settings, edit):
+        return False, ''
+    w, h = geom.source
+    if geom.scale < NEURAL_MIN_SCALE:
+        return False, 'Нейросеть не нужна: снимку хватает собственного разрешения.'
+    if w * h > NEURAL_MAX_MP * 1e6:
+        return False, f'Нейросеть пропущена: исходник больше {NEURAL_MAX_MP:g} Мп — он и так детальный.'
+    return True, ''
+
+
+def enhance_key(source: Source, edit: Edit | None, settings: Settings):
+    edit = edit or Edit()
+    return source.info.key + (edit.rotation % 360, round(edit.angle, 3))
+
+
+def enhanced(source: Source, settings: Settings, edit: Edit | None, progress=None, cancel=None, compute=True):
+    """Cached Real-ESRGAN version of the oriented source, computing it if asked."""
+    from . import neural
+    key = enhance_key(source, edit, settings)
+    entry = neural.CACHE.get(key)
+    if entry is None and compute:
+        entry = neural.enhance(source.base(edit or Edit(), True), 1.0, progress, cancel)
+        neural.CACHE.put(key, entry)
+    return entry
 
 
 def needs_analysis(settings: Settings, edit: Edit | None):
@@ -585,13 +622,29 @@ def resample(block, d, origin, size):
     return np.clip(out, 0, 1)
 
 
+def _sample(base, geom, iw, window):
+    """Resample the crop of `base` so that the image is `iw` px wide; return `window` (x0, y0, x1, y1)."""
+    bh, bw = base.shape[:2]
+    x0, y0, x1, y1 = geom.crop
+    cx0, cy0, cx1 = x0 * bw, y0 * bh, x1 * bw
+    s = iw / max(1e-6, cx1 - cx0)                               # render px per base px
+    mx0, my0, mx1, my1 = window
+    sx0 = max(0, int(math.floor(cx0 + mx0 / s)) - 4)
+    sy0 = max(0, int(math.floor(cy0 + my0 / s)) - 4)
+    sx1 = min(bw, int(math.ceil(cx0 + mx1 / s)) + 4)
+    sy1 = min(bh, int(math.ceil(cy0 + my1 / s)) + 4)
+    d = 1 / s
+    origin = ((cx0 - sx0) + (mx0 + .5) * d - .5, (cy0 - sy0) + (my0 + .5) * d - .5)
+    return resample(_to_float(base[sy0:sy1, sx0:sx1]), d, origin, (mx1 - mx0, my1 - my0))
+
+
 def render(source: Source, settings: Settings, edit: Edit | None = None, *, k=1.0, region=None,
-           use_full=True, before=False, progress=None, cancel=None, analysis_cache=None):
+           use_full=True, before=False, enhanced_source=None, analysis_cache=None, **_):
     """Render the canvas at scale `k` (render px per output px), or only a canvas `region`
     (x, y, w, h) in render pixels. `use_full=False` renders from the proxy (fit preview);
     `before=True` gives the same framing without any processing (for comparison).
+    `enhanced_source` is a neural cache entry used in place of the plain source.
     """
-    from . import neural
     edit = edit or Edit()
     analysis = source.ensure_analysis(analysis_cache) if needs_analysis(settings, edit) else None
     geom = plan(source, settings, edit, analysis_cache, analysis)
@@ -605,47 +658,23 @@ def render(source: Source, settings: Settings, edit: Edit | None = None, *, k=1.
     ox, oy = round(geom.offset[0] * k), round(geom.offset[1] * k)
     ix0, iy0 = max(rx, ox), max(ry, oy)
     ix1, iy1 = min(rx + rwid, ox + iw), min(ry + rhei, oy + ih)
+    used_neural = enhanced_source is not None and not before
     if ix1 <= ix0 or iy1 <= iy0:
-        return Rendered(canvas, geom, notes)
+        return Rendered(canvas, geom, notes, used_neural)
     want = (ix0 - ox, iy0 - oy, ix1 - ix0, iy1 - iy0)        # wanted part, image coords
-    base = source.base(edit, use_full)
-    bh, bw = base.shape[:2]
-    x0, y0, x1, y1 = geom.crop
-    cx0, cy0, cx1, cy1 = x0 * bw, y0 * bh, x1 * bw, y1 * bh
-    s = iw / max(1e-6, cx1 - cx0)                               # render px per base px
-    full_scale = geom.scale                                     # output px per full-res source px
-    values, gains, extras = effective_values(settings, edit, analysis, full_scale)
+    values, gains, extras = effective_values(settings, edit, analysis, geom.scale)
     preview = not use_full or k < 1
-    kind = 'off' if before or not use_full else neural_kind(settings, edit)
     margin = 0 if before else int(math.ceil(3 * max(1., max(iw, ih) / 1600, 2.5 * k))) + 6
     mx0, my0 = max(0, want[0] - margin), max(0, want[1] - margin)
     mx1, my1 = min(iw, want[0] + want[2] + margin), min(ih, want[1] + want[3] + margin)
-    src_margin = 28 if kind != 'off' else 4
-    sx0 = max(0, int(math.floor(cx0 + mx0 / s)) - src_margin)
-    sy0 = max(0, int(math.floor(cy0 + my0 / s)) - src_margin)
-    sx1 = min(bw, int(math.ceil(cx0 + mx1 / s)) + src_margin)
-    sy1 = min(bh, int(math.ceil(cy0 + my1 / s)) + src_margin)
-    block = _to_float(base[sy0:sy1, sx0:sx1])
-    factor = 1
-    used_neural = False
-    if kind != 'off':
-        spec = neural.UPSCALERS[kind]
-        if not (full_scale > 1.05 or settings.neural_always):
-            notes.append('Нейросеть не нужна: снимок не увеличивается.')
-        elif (x1 - x0) * (y1 - y0) * geom.source[0] * geom.source[1] > spec['limit_mp'] * 1e6:
-            notes.append(f'Нейросеть пропущена: кадр больше {spec["limit_mp"]} Мп.')
-        else:
-            import cv2
-            sr = neural.upscale(block, kind, progress=progress, cancel=cancel)
-            strength = settings.neural_strength / 100
-            if strength < 1:
-                plain = cv2.resize(block, (sr.shape[1], sr.shape[0]), interpolation=cv2.INTER_LANCZOS4)
-                sr = plain + (sr - plain) * strength
-            block, factor, used_neural = sr, spec['factor'], True
-            notes.append(spec['title'].split(' · ')[0] + ' применена.')
-    d = factor / s
-    origin = (factor * (cx0 - sx0) + (mx0 + .5) * d - .5, factor * (cy0 - sy0) + (my0 + .5) * d - .5)
-    window = resample(block, d, origin, (mx1 - mx0, my1 - my0))
+    plain = source.base(edit, use_full)
+    if used_neural:
+        window = _sample(enhanced_source['full'] if use_full else enhanced_source['proxy'], geom, iw, (mx0, my0, mx1, my1))
+        strength = settings.neural_strength / 100
+        if strength < 1:
+            window = window * strength + _sample(plain, geom, iw, (mx0, my0, mx1, my1)) * (1 - strength)
+    else:
+        window = _sample(plain, geom, iw, (mx0, my0, mx1, my1))
     if not before:
         def get_maps():
             return source_maps(source, edit, geom, values, gains)
@@ -653,6 +682,8 @@ def render(source: Source, settings: Settings, edit: Edit | None = None, *, k=1.
                          (mx0, my0, mx1 - mx0, my1 - my0), (iw, ih), k, preview)
         if not preview or k >= .5:
             window = output_sharpen(window, settings, k)
+        if used_neural:
+            notes.append('Нейросеть применена.')
     part = window[want[1] - my0:want[1] - my0 + want[3], want[0] - mx0:want[0] - mx0 + want[2]]
     canvas[iy0 - ry:iy1 - ry, ix0 - rx:ix1 - rx] = part
     return Rendered(canvas, geom, notes, used_neural)
@@ -673,11 +704,10 @@ def _pool():
 
 
 def render_fast(source: Source, settings: Settings, edit: Edit | None = None, *, k=1.0, region=None,
-                use_full=True, before=False, progress=None, cancel=None, analysis_cache=None, strips=None):
+                use_full=True, before=False, enhanced_source=None, analysis_cache=None, strips=None, **_):
     """`render` split into horizontal strips rendered in parallel (NumPy/OpenCV release the GIL).
 
     Caches (analysis, transformed base, tone maps) are warmed first so strips share them.
-    Neural renders stay single-strip: the network already uses every core.
     """
     edit = edit or Edit()
     analysis = source.ensure_analysis(analysis_cache) if needs_analysis(settings, edit) else None
@@ -685,20 +715,19 @@ def render_fast(source: Source, settings: Settings, edit: Edit | None = None, *,
     cw, ch = geom.canvas
     region = region or (0, 0, max(1, round(cw * k)), max(1, round(ch * k)))
     rx, ry, rw, rh = region
-    neural_on = use_full and not before and neural_kind(settings, edit) != 'off'
     n = strips or max(1, min(8, rw * rh // 300_000))
-    if neural_on or n == 1 or rh < 128:
-        return render(source, settings, edit, k=k, region=region, use_full=use_full, before=before,
-                      progress=progress, cancel=cancel, analysis_cache=analysis_cache)
-    source.base(edit, use_full)
+    kwargs = dict(k=k, use_full=use_full, before=before, enhanced_source=enhanced_source, analysis_cache=analysis_cache)
+    if n == 1 or rh < 128:
+        return render(source, settings, edit, region=region, **kwargs)
+    if enhanced_source is None:
+        source.base(edit, use_full)
     if not before:
         values, gains, _ = effective_values(settings, edit, analysis, geom.scale)
         if any(values[key] for key in ('shadows', 'highlights', 'clarity', 'dehaze')):
             source_maps(source, edit, geom, values, gains)
     step = (rh + n - 1) // n
     parts = [(rx, ry + top, rw, min(step, rh - top)) for top in range(0, rh, step)]
-    futures = [_pool().submit(render, source, settings, edit, k=k, region=part, use_full=use_full, before=before,
-                              cancel=cancel, analysis_cache=analysis_cache) for part in parts]
+    futures = [_pool().submit(render, source, settings, edit, region=part, **kwargs) for part in parts]
     results = [f.result() for f in futures]
     image = np.concatenate([r.image for r in results], axis=0)
     notes = []

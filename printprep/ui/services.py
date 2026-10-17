@@ -1,4 +1,4 @@
-"""Background work for the UI: preview rendering, thumbnails and batch export.
+"""Background work for the UI: preview rendering, neural enhancement, thumbnails, export.
 
 Signals are emitted from worker threads; Qt queues them to the GUI thread.
 """
@@ -18,7 +18,8 @@ from PySide6.QtGui import QImage
 from ..imageio import thumbnail
 from ..model import Edit, Settings
 from ..neural import Cancelled
-from ..pipeline import AnalysisCache, Source, assess, plan, render_fast, soft_proof, transform
+from ..pipeline import (AnalysisCache, Source, assess, enhance_key, enhanced, needs_analysis, neural_status, plan,
+                        render_fast, soft_proof)
 
 
 def to_qimage(array):
@@ -28,6 +29,18 @@ def to_qimage(array):
     array = np.ascontiguousarray(array)
     h, w = array.shape[:2]
     return QImage(array.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
+
+
+def histogram(u8):
+    """RGB + luminance histograms (256 bins, normalised) and clipping fractions."""
+    small = u8[::2, ::2].reshape(-1, 3)
+    hists = [np.bincount(small[:, c], minlength=256).astype(np.float32) for c in range(3)]
+    lum = np.round(small @ np.array([.2126, .7152, .0722])).astype(np.int32)
+    hists.append(np.bincount(np.clip(lum, 0, 255), minlength=256).astype(np.float32))
+    n = max(1, small.shape[0])
+    clip_low = float((small.max(axis=1) <= 1).mean())
+    clip_high = float((small.max(axis=1) >= 254).mean())
+    return {'channels': [h / n for h in hists], 'low': clip_low, 'high': clip_high}
 
 
 @dataclass
@@ -58,6 +71,81 @@ class PreviewResult:
     analysis: dict | None = None
     seconds: float = 0
     path: str = ''
+    neural: str = 'off'               # off | not_needed | pending | ready
+    neural_reason: str = ''
+    hist: dict | None = None
+
+
+class NeuralWorker(QObject):
+    """Runs Real-ESRGAN for one photo at a time. Colour edits never restart it; a different
+    photo or orientation replaces the job."""
+    progress = Signal(object, float, float)     # key, fraction, eta seconds
+    done = Signal(object)                       # key
+    failed = Signal(object, str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.cond = threading.Condition()
+        self.job = None
+        self.current = None
+        self.running = True
+        self.thread = threading.Thread(target=self._loop, name='printprep-neural', daemon=True)
+        self.thread.start()
+
+    def ensure(self, source, settings, edit):
+        key = enhance_key(source, edit, settings)
+        with self.cond:
+            if self.current == key or (self.job and self.job[0] == key):
+                return key
+            self.job = (key, source, replace(settings, adjust=replace(settings.adjust)), replace(edit or Edit()))
+            if self.current is not None:
+                self.current = None          # the running photo is no longer wanted: let it stop
+            self.cond.notify()
+        return key
+
+    def cancel(self):
+        with self.cond:
+            self.job = None
+            self.current = None
+
+    def busy_key(self):
+        with self.cond:
+            return self.current or (self.job[0] if self.job else None)
+
+    def stop(self):
+        with self.cond:
+            self.running = False
+            self.job = None
+            self.current = None
+            self.cond.notify()
+        self.thread.join(timeout=5)
+
+    def _loop(self):
+        from ..neural import release
+        while True:
+            with self.cond:
+                while self.running and self.job is None:
+                    self.cond.wait()
+                if not self.running:
+                    break
+                key, source, settings, edit = self.job
+                self.job = None
+                self.current = key
+            try:
+                stale = lambda: self.current != key or not self.running
+                enhanced(source, settings, edit, progress=lambda f, eta: self.progress.emit(key, f, eta), cancel=stale)
+                if not stale():
+                    self.done.emit(key)
+            except Cancelled:
+                pass
+            except Exception as e:
+                traceback.print_exc()
+                self.failed.emit(key, str(e) or e.__class__.__name__)
+            finally:
+                with self.cond:
+                    if self.current == key:
+                        self.current = None
+        release()
 
 
 class RenderService(QObject):
@@ -66,9 +154,10 @@ class RenderService(QObject):
     failed = Signal(int, str)
     analyzed = Signal(str, object)        # path, analysis dict
 
-    def __init__(self, analysis_cache: AnalysisCache, parent=None):
+    def __init__(self, analysis_cache: AnalysisCache, neural_worker: NeuralWorker, parent=None):
         super().__init__(parent)
         self.cache = analysis_cache
+        self.neural = neural_worker
         self.sources = OrderedDict()
         self.cond = threading.Condition()
         self.pending = None
@@ -83,11 +172,6 @@ class RenderService(QObject):
             self.pending = req
             self.latest = req.gen
             self.cond.notify()
-
-    def cancel(self, gen):
-        with self.cond:
-            self.latest = max(self.latest, gen)
-            self.pending = None
 
     def stop(self):
         with self.cond:
@@ -157,7 +241,6 @@ class RenderService(QObject):
         if self._stale(req):
             return
         settings, edit = req.settings, req.edit
-        from ..pipeline import needs_analysis
         if source.analysis is None and needs_analysis(settings, edit):
             self.status.emit(req.gen, 'Анализ снимка: свет, цвет, лица…', None)
             source.ensure_analysis(self.cache)
@@ -165,38 +248,30 @@ class RenderService(QObject):
             self.analyzed.emit(str(req.info.path), source.analysis)
         if self._stale(req):
             return
-        cancel = lambda: self._stale(req)
+        geom = plan(source, settings, edit, self.cache)
         if req.mode == 'crop':
+            import cv2
             base = source.base(replace(edit, manual_crop=False), False)
             h, w = base.shape[:2]
             k = min(1, req.target / max(h, w))
-            import cv2
             small = cv2.resize(base, (max(1, round(w * k)), max(1, round(h * k))), interpolation=cv2.INTER_AREA)
             image = to_qimage((small >> 8).astype(np.uint8) if small.dtype == np.uint16 else small)
-            geom = plan(source, settings, edit, self.cache)
             self.ready.emit(PreviewResult(req.gen, 'crop', image, None, geom.canvas, k, None, geom, [],
                                           source.analysis, time.perf_counter() - started, str(req.info.path)))
             return
-        geom = plan(source, settings, edit, self.cache)
+        applies, reason = neural_status(source, settings, edit, geom)
+        entry = enhanced(source, settings, edit, compute=False) if applies else None
+        state = 'ready' if entry is not None else 'pending' if applies else ('not_needed' if reason else 'off')
+        if state == 'pending':
+            self.neural.ensure(source, settings, edit)
         cw, ch = geom.canvas
         if req.mode == 'roi':
             k, use_full, region = 1.0, True, req.region
-            kind = settings.upscaler if edit.neural is None else ('esrgan' if edit.neural else 'off')
-            if kind != 'off' and geom.scale > 1.05 or (kind != 'off' and settings.neural_always):
-                title = {'fsrcnn': 'FSRCNN ×2', 'esrgan': 'Real-ESRGAN ×4'}.get(kind, 'Нейросеть')
-                self.status.emit(req.gen, f'Нейросеть {title} улучшает видимую область…', 0.)
-            else:
-                self.status.emit(req.gen, 'Рендер 100% · полное разрешение…', None)
+            self.status.emit(req.gen, 'Рендер 1:1 в полном разрешении…', None)
         else:
-            k = min(1., req.target / max(cw, ch))
-            use_full = False
-            region = None
-            self.status.emit(req.gen, 'Обновляем просмотр…', None)
-
-        def progress(f):
-            self.status.emit(req.gen, f'Нейросеть улучшает видимую область · {f * 100:.0f}%', f)
+            k, use_full, region = min(1., req.target / max(cw, ch)), False, None
         result = render_fast(source, settings, edit, k=k, region=region, use_full=use_full,
-                             progress=progress, cancel=cancel, analysis_cache=self.cache)
+                             enhanced_source=entry, analysis_cache=self.cache)
         if self._stale(req):
             return
         display = np.round(np.clip(result.image, 0, 1) * 255).astype(np.uint8)
@@ -212,9 +287,10 @@ class RenderService(QObject):
             before = to_qimage(plain.image)
         if self._stale(req):
             return
-        notes = list(dict.fromkeys(source.notes + result.notes))
+        notes = list(dict.fromkeys(source.notes + result.notes + ([reason] if reason else [])))
         self.ready.emit(PreviewResult(req.gen, req.mode, to_qimage(display), before, geom.canvas, k, region, geom,
-                                      notes, source.analysis, time.perf_counter() - started, str(req.info.path)))
+                                      notes, source.analysis, time.perf_counter() - started, str(req.info.path),
+                                      state, reason, histogram(display) if req.mode == 'fit' else None))
 
 
 class ThumbnailLoader(QObject):
@@ -222,7 +298,7 @@ class ThumbnailLoader(QObject):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix='printprep-thumb')
+        self.pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix='printprep-thumb')
         self.generation = 0
 
     def load(self, paths, size=240):

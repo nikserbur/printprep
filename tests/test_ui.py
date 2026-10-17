@@ -78,7 +78,8 @@ def test_saved_preset_appears_selected_and_is_editable(desktop_runtime, window, 
     # Edit the saved preset and save in place.
     window.inspector.batch_controls['contrast'].setValue(15, emit=True)
     window.inspector.batch_controls['contrast'].editingFinished.emit()
-    assert window._dirty() and window.presets.save_btn.isVisibleTo(window.presets)
+    assert window._dirty() and window.inspector.dirty_row.isVisibleTo(window.inspector)
+    assert window.inspector.save_btn.text() == 'Сохранить'
     window.save_preset()
     assert not window._dirty()
     reloaded = window.library.__class__(window.library.folder).get('user:Саша · глянец')
@@ -102,8 +103,7 @@ def test_undo_redo(desktop_runtime, window):
 
 def test_size_modes_and_4k(desktop_runtime, window):
     window.inspector.batch_controls['size_mode'].changed.emit('pixels')
-    window.inspector.batch_controls['pixel_preset'].setCurrentIndex(1)
-    window.inspector._pixel_preset_chosen(1)
+    window.inspector.batch_controls['pixel_preset']._choose((3840, 2160))
     assert (window.settings.pixel_width, window.settings.pixel_height) == (3840, 2160)
     window.inspector.batch_controls['size_mode'].changed.emit('long_edge')
     window.inspector._set('long_edge', 3840, commit=True, refresh=True)
@@ -126,29 +126,51 @@ def test_crop_mode_and_rotation(desktop_runtime, window):
     assert window.viewer.canvas[1] > window.viewer.canvas[0]
 
 
-def test_compare_shows_before_image(desktop_runtime, window):
+def test_view_modes_show_before_image(desktop_runtime, window):
     window.apply_preset('builtin:smart')
-    window.compare_btn.setChecked(True)
+    window.set_view_mode('split')
     wait_idle(desktop_runtime, window)
     assert window.viewer.fit_before is not None and window.viewer.compare
+    window.set_view_mode('original')
+    wait_idle(desktop_runtime, window)
+    assert window.viewer.view_mode == 'original' and window.viewer.fit_before is not None
+    window.set_view_mode('result')
+    assert not window.viewer.compare
 
 
-def test_neural_shows_progress_and_result_at_100(desktop_runtime, window):
-    window.strip.select_row(2)                    # 300×200 photo
+def test_neural_runs_in_background_and_appears_in_preview(desktop_runtime, window):
+    from printprep import neural
+    neural.CACHE.clear()
+    window.strip.select_row(2)                    # 300×200 photo, needs enlargement
     wait_idle(desktop_runtime, window)
     window.apply_preset('builtin:upscale_small')
-    window.inspector.batch_controls['upscaler'].changed.emit('fsrcnn')
-    statuses = []
-    window.service.status.connect(lambda g, text, p: statuses.append(text))
-    window.viewer.set_zoom(1.0)
-    wait_idle(desktop_runtime, window, 120)
-    deadline = time.monotonic() + 60
-    while window.viewer.roi_img is None and time.monotonic() < deadline:
+    progress = []
+    window.neural.progress.connect(lambda key, f, eta: progress.append(f))
+    deadline = time.monotonic() + 120
+    while (window.last_result is None or window.last_result.neural != 'ready') and time.monotonic() < deadline:
         desktop_runtime.processEvents()
         time.sleep(.02)
-    assert window.viewer.roi_img is not None
-    assert any('Нейросеть' in s for s in statuses)
-    assert any('FSRCNN' in n for n in window.last_result.notes)
+    wait_idle(desktop_runtime, window)
+    assert window.last_result.neural == 'ready' and progress and progress[-1] == 1
+    assert window.viewer.neural_badge is None
+    # Colour edits reuse the cached enhancement instantly.
+    window.inspector.batch_controls['exposure'].setValue(.5, emit=True)
+    window.inspector.batch_controls['exposure'].editingFinished.emit()
+    wait_idle(desktop_runtime, window)
+    assert window.last_result.neural == 'ready' and window.last_result.seconds < 5
+
+
+def test_preset_menu_actions(desktop_runtime, window, monkeypatch):
+    monkeypatch.setattr(QInputDialog, 'getText', staticmethod(lambda *a, **k: ('Мой глянец', True)))
+    window.apply_preset('builtin:lab_10x15')
+    window._preset_action('duplicate')
+    assert window.active_id.startswith('user:') and window.library.get(window.active_id)
+    assert window.inspector.preset_name.text().startswith('Фотолаборатория 10×15 — копия')
+    window._preset_action('rename')
+    assert window.active_id == 'user:Мой глянец'
+    monkeypatch.setattr(QMessageBox, 'question', staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
+    window._preset_action('delete')
+    assert window.library.get('user:Мой глянец') is None
 
 
 def test_export_from_ui(desktop_runtime, window):

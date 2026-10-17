@@ -66,17 +66,24 @@ def demo_photos(folder: Path):
 
 def wait(app, window, seconds=25):
     end = time.monotonic() + seconds
-    time.sleep(.05)
+    quiet = 0
     while time.monotonic() < end:
         app.processEvents()
-        idle = window.service.is_idle() and not window.preview_timer.isActive()
-        if idle and (window.scan_worker is None or not window.scan_worker.is_alive()):
-            for _ in range(10):
-                app.processEvents()
-                time.sleep(.02)
-            if window.service.is_idle() and not window.preview_timer.isActive():
-                return
+        idle = window.service.is_idle() and not window.preview_timer.isActive() and             (window.scan_worker is None or not window.scan_worker.is_alive())
+        quiet = quiet + 1 if idle else 0
+        if quiet >= 8:
+            return
         time.sleep(.02)
+
+
+def wait_neural(app, window, seconds=120):
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        app.processEvents()
+        if window.last_result is not None and window.last_result.neural == 'ready':
+            break
+        time.sleep(.02)
+    wait(app, window)
 
 
 def main():
@@ -103,6 +110,7 @@ def main():
         window.grab().save(str(out / 'start.png'))
         window.load_folder(folder)
         wait(app, window)
+        window.set_view_mode('result')
         window.apply_preset('builtin:lab_10x15')
         wait(app, window)
         window.grab().save(str(out / 'interface.png'))
@@ -112,20 +120,32 @@ def main():
         wait(app, window)
         window.grab().save(str(out / 'photo.png'))
         window.inspector.set_scope('batch')
-        window.compare_btn.setChecked(True)
+        window.set_view_mode('split')
         wait(app, window)
         window.grab().save(str(out / 'compare.png'))
-        window.compare_btn.setChecked(False)
+        window.set_view_mode('result')
         window.set_crop_mode(True)
         wait(app, window)
         window.grab().save(str(out / 'crop.png'))
         window.set_crop_mode(False)
         window.strip.select_row(3)
         window.apply_preset('builtin:upscale_small')
+        window.inspector.neural_section.set_open(True)
         wait(app, window)
-        window.viewer.set_zoom(1.0)
-        wait(app, window, 90)
+        app.processEvents()
+        window.grab().save(str(out / 'neural_progress.png'))
+        wait_neural(app, window)
         window.grab().save(str(out / 'neural.png'))
+        window.viewer.set_zoom(1.0)
+        wait(app, window, 60)
+        window.grab().save(str(out / 'neural_1to1.png'))
+        from printprep.ui.preset_manager import PresetManager
+        dialog = PresetManager(window.library, window.active_id, window)
+        dialog.resize(820, 520)
+        dialog.show()
+        app.processEvents()
+        dialog.grab().save(str(out / 'presets.png'))
+        dialog.close()
         window.close()
     print('saved to', out)
 
