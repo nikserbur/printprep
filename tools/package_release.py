@@ -46,5 +46,23 @@ def package(root):
     print(f'Packaged {archive_path.name}: {archive_path.stat().st_size / 1e6:.1f} MB')
 
 
+def refresh_shell_icon(exe):
+    """Explorer caches icons by path, so a rebuilt exe keeps showing the previous icon.
+    Tell the shell this file changed and drop its image list so the new icon is read."""
+    import sys
+    if sys.platform != 'win32' or not Path(exe).exists():
+        return
+    try:
+        import ctypes
+        shell32 = ctypes.windll.shell32
+        SHCNE_UPDATEITEM, SHCNE_ASSOCCHANGED, SHCNF_PATHW, SHCNF_IDLIST = 0x2000, 0x08000000, 0x0005, 0
+        shell32.SHChangeNotify(SHCNE_UPDATEITEM, SHCNF_PATHW, ctypes.c_wchar_p(str(exe)), None)
+        shell32.SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None)
+    except Exception:
+        pass
+
+
 if __name__ == '__main__':
-    package(Path(__file__).resolve().parents[1])
+    root = Path(__file__).resolve().parents[1]
+    package(root)
+    refresh_shell_icon(root / 'dist' / 'PrintPrep' / 'PrintPrep.exe')
