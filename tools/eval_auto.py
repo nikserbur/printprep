@@ -5,7 +5,7 @@ contrast, haze); the auto correction is applied at 100 % and the colour differen
 the reference is measured (mean ΔE in Oklab ×100, ≈ ΔE00 scale). A good auto shrinks
 the error a lot and barely touches the references themselves ("do no harm").
 
-Usage: python tools/eval_auto.py [--only=wb,light,color] <folder with good JPEGs> [more folders...]
+Usage: python tools/eval_auto.py [--only=wb,light,color] <folder with good JPEG/PNG photos> [more folders...]
 """
 import sys
 import tempfile
@@ -72,9 +72,9 @@ def evaluate(ref, groups=None):
 
 def main(folders):
     from concurrent.futures import ProcessPoolExecutor
-    refs = [p for f in folders for p in sorted(Path(f).glob('*.jpg'))]
+    refs = [p for f in folders for p in sorted(Path(f).iterdir()) if p.suffix.lower() in ('.jpg', '.jpeg', '.png')]
     if not refs:
-        raise SystemExit('Нет JPEG-эталонов')
+        raise SystemExit('Нет эталонов (JPEG или PNG)')
     with ProcessPoolExecutor(min(8, len(refs))) as pool:
         rows = list(pool.map(evaluate, refs, [dict(GROUPS)] * len(refs)))
     print(f'Эталонов: {len(refs)}')

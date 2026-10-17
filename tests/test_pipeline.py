@@ -218,6 +218,17 @@ def test_skin_guard_keeps_faces_natural():
     assert auto.skin_guard(lin, green, [])[1] is False      # no faces: no opinion
 
 
+def test_skin_guard_keeps_faces_from_turning_grey():
+    lin, faces = _skin_frame((186, 174, 166))               # pale face under a cool cast (Kodak kodim04)
+    cooler = np.array([.92, 1.01, 1.13], np.float32)       # a pink backdrop read as neutral cools it further
+    _, chroma = auto.skin_tone(lin, faces)
+    assert auto.skin_hue(lin * cooler, faces) is None       # drained to grey: the hue alone has no opinion
+    gains, acted = auto.skin_guard(lin, cooler, faces)
+    assert acted and auto.skin_tone(lin * gains, faces)[1] > .6 * chroma
+    grey, faces = _skin_frame((170, 170, 170))              # black-and-white photo: nothing to protect
+    assert auto.skin_guard(grey, np.array([1.03, 1., .97], np.float32), faces)[1] is False
+
+
 def test_shadows_lift_only_where_they_hold_detail():
     rng = np.random.default_rng(3)
     flat = np.zeros((400, 600, 3), np.uint8)                # studio black backdrop, bright subject

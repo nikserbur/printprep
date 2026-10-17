@@ -8,9 +8,9 @@ White balance votes in log-chroma space (near-neutral surfaces cluster at the
 illuminant), weighting textured surfaces above smooth sky or backdrops. A cast shifts
 shadows and highlights alike, while warm scene light (sunset, lamps) leaves shadows
 neutral: only the first is corrected almost fully. Detected skin must stay in the
-natural hue range. Black/white points follow the Lightroom habit of letting about
-0.1 % of pixels clip, at full strength only when both ends of the histogram are
-empty; shadows are lifted only where they hold detail; strong veils go to the
+natural hue range and must not turn grey. Black/white points follow the Lightroom
+habit of letting about 0.1 % of pixels clip, at full strength only when both ends of
+the histogram are empty; shadows are lifted only where they hold detail; strong veils go to the
 dark-channel dehaze. Exposure aims the log-average at middle grey, also lifts frames
 whose highlights stop far short of white, takes faces as a second opinion and never
 darkens bright scenes unless highlights really clip. Measured with tools/eval_auto.py.
@@ -204,10 +204,12 @@ def white_balance(lin):
 
 
 SKIN_HUE = (25., 95.)     # Oklab hue of natural skin of any tone under neutral light, degrees
+SKIN_CHROMA = .015        # natural skin is never greyer: half the Oklab chroma of very pale skin (≈ .03)
+GREY_SKIN_MISS = 30.      # a face drained to grey is as wrong as one pushed this far out of the hue range
 
 
-def skin_hue(lin, faces):
-    """Median Oklab hue of the central face areas, or None without usable faces."""
+def skin_tone(lin, faces):
+    """Median Oklab (hue in degrees, chroma) of the central face areas, or None without usable faces."""
     if not faces:
         return None
     h, w = lin.shape[:2]
@@ -221,28 +223,41 @@ def skin_hue(lin, faces):
     if not patches:
         return None
     lab = to_oklab(np.clip(np.median(np.concatenate(patches), axis=0), 0, 1)[None, None, :].astype(np.float32))[0, 0]
-    if lab[0] < .2 or math.hypot(lab[1], lab[2]) < .01:
-        return None                         # too dark or grey (B/W, heavy shadow): no opinion
-    return math.degrees(math.atan2(lab[2], lab[1]))
+    if lab[0] < .2:
+        return None                         # too dark (heavy shadow): no opinion
+    return math.degrees(math.atan2(lab[2], lab[1])), math.hypot(lab[1], lab[2])
+
+
+def skin_hue(lin, faces):
+    """Median Oklab hue of the central face areas, or None without usable faces or for grey ones."""
+    tone = skin_tone(lin, faces)
+    return None if tone is None or tone[1] < .01 else tone[0]
 
 
 def skin_guard(lin, gains, faces):
     """Skin is a memory colour: people forgive a cast on a wall, not on a face. If the white
-    balance would push detected skin out of the natural hue range (green or purple faces),
+    balance would push detected skin out of the natural hue range (green or purple faces) or
+    drain it to grey (a pink backdrop read as neutral cools a face that was cool already),
     pull the correction back toward neutral. Returns (gains, acted)."""
-    before, after = skin_hue(lin, faces), skin_hue(lin * gains, faces)
-    if after is None:
+    before, after = skin_tone(lin, faces), skin_tone(lin * gains, faces)
+    if before is None or after is None:
         return gains, False
     lo, hi = SKIN_HUE
 
-    def miss(hue):
-        return 0. if hue is None else max(0., lo - hue, hue - hi)
-    if miss(after) <= miss(before) + 3:
+    def miss(tone):
+        if tone is None:
+            return 0.
+        hue, chroma = tone
+        off = 0. if lo <= hue <= hi else min((lo - hue) % 360, (hue - hi) % 360)
+        grey = max(0., 1 - chroma / SKIN_CHROMA)     # near grey the hue is noise and greyness is the fault
+        return (1 - grey) * off + grey * GREY_SKIN_MISS
+    limit = miss(before) + 3
+    if miss(after) <= limit:
         return gains, False
     for k in (.6, .3):
         g = np.exp(np.log(gains) * k)
         g = (g / float(g @ LUMA)).astype(np.float32)
-        if miss(skin_hue(lin * g, faces)) <= miss(before) + 3:
+        if miss(skin_tone(lin * g, faces)) <= limit:
             return g, True
     return np.ones(3, np.float32), True
 
