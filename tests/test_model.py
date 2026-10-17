@@ -88,3 +88,11 @@ def test_reads_2_0_upscaler_choice():
     assert Settings.from_dict(data).neural
     data['upscaler'] = 'off'
     assert not Settings.from_dict(data).neural
+
+
+def test_neural_detail_defaults_to_full_texture():
+    from printprep.model import Settings
+    from printprep.neural import denoise_level
+    from printprep.ui.neural_dialog import DEFAULT_DETAIL
+    assert Settings().neural_detail == 100 == DEFAULT_DETAIL
+    assert denoise_level(Settings().neural_detail) == 0      # the weak-denoise network alone

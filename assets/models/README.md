@@ -23,8 +23,9 @@ How the enhancement is used:
 - **Detail control.** Real-ESRGAN's `--denoise_strength` blends the weights of the standard and
   the weak-denoise network (deep network interpolation, Wang et al. 2019). Print Prep patches the
   blended weights into the ONNX graph in memory (`printprep/onnx_weights.py`, no `onnx` package),
-  then adds back a little high-frequency texture of the plain enlargement. The default
-  (detail 50, strength 100) was chosen by measurement; both live in an "Advanced" dialog.
+  then adds back a little high-frequency texture of the plain enlargement. The default is
+  detail 100 (the weak-denoise network plus texture) and strength 100: on real photos it keeps
+  grass, hair and fabric without visible noise. Both live in an "Advanced" dialog.
 - It is computed once per photo, orientation and detail level in a background thread with
   progress, then cached (memory budget ~450 MB, shared by preview and export). Colour edits and
   the strength slider never re-run the network; strength is blended at render time.

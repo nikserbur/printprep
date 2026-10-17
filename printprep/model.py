@@ -114,7 +114,7 @@ class Settings:
     print_brightness: float = 0
     neural: bool = False
     neural_strength: float = 100
-    neural_detail: float = 50           # 0 = cleanest, 100 = keep grain and fine texture
+    neural_detail: float = 100          # 0 = cleanest, 100 = keep grain and fine texture (best on real photos)
     adjust: Adjust = field(default_factory=Adjust)
 
     def validate(self, check_icc=True):

@@ -251,3 +251,30 @@ def test_narrow_window_switches_toolbar_to_icons(desktop_runtime, window):
     assert not window.nav_prev.isVisible()
     window._fit_viewer_bar(1200)
     assert not window.bar_compact and window.view_seg.buttons['result'].text()
+
+
+def _pixels(qimage):
+    q = qimage.convertToFormat(qimage.Format.Format_RGB888)
+    arr = np.frombuffer(q.constBits(), np.uint8, q.sizeInBytes()).reshape(q.height(), q.bytesPerLine())
+    return arr[:, :q.width() * 3].astype(np.float32)
+
+
+def test_style_change_refreshes_the_sharp_tile_at_1to1(desktop_runtime, window):
+    """At 1:1 a sharp tile covers the preview; it must follow style and colour changes at once."""
+    window.set_view_mode('result')
+    window.viewer.set_zoom(1.0)
+    wait_idle(desktop_runtime, window)
+    time.sleep(.3)
+    wait_idle(desktop_runtime, window)
+    before = window.viewer.roi_img
+    assert before is not None
+    window.inspector.look_buttons['bw'].click()
+    wait_idle(desktop_runtime, window)
+    time.sleep(.3)
+    wait_idle(desktop_runtime, window)
+    after = window.viewer.roi_img
+    assert after is not None and after.size() == before.size()
+    tile = _pixels(after)
+    assert float(np.abs(tile - _pixels(before)).mean()) > 1
+    rgb = tile.reshape(tile.shape[0], -1, 3)
+    assert float(np.abs(rgb[..., 0] - rgb[..., 2]).mean()) < 2      # grey: B/W reached the tile

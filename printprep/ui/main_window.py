@@ -474,7 +474,13 @@ class MainWindow(QMainWindow):
         try:
             saved = self.store.value('settings')
             if saved:
-                self.settings = Settings.from_dict(json.loads(saved))
+                data = json.loads(saved)
+                if not self.store.value('detail_default_100', False, type=bool):
+                    # 2.2.0 defaulted "Clean ↔ Detail" to 50; 100 proved best on real photos.
+                    if data.get('neural_detail') == 50:
+                        data['neural_detail'] = 100
+                    self.store.setValue('detail_default_100', True)
+                self.settings = Settings.from_dict(data)
                 self.settings.validate(check_icc=False)
             self.active_id = self.store.value('active_preset', 'builtin:original') or None
         except Exception:
@@ -848,6 +854,7 @@ class MainWindow(QMainWindow):
             return
         self.gen += 1
         self.roi_key = (self._key(), region)
+        self.roi_gen = self.gen
         self.service.request(PreviewRequest(self.gen, p, copy_settings(self.settings), copy_edit(self.edit() or Edit()), 'roi',
                                             0, region, self.view_mode != 'result', self.proof_btn.isChecked(), self.gamut_btn.isChecked()))
 
@@ -892,6 +899,11 @@ class MainWindow(QMainWindow):
                     self.viewer.update_crop_image(result.image, result.k, result.geometry.crop, ratio)
             return
         if result.mode == 'fit':
+            if self.roi_key and self.roi_key[0] != self._key():
+                # The sharp 1:1 tile was rendered with older settings: drop it so the new look shows
+                # at once; set_fit then asks for a fresh tile.
+                self.viewer.clear_roi()
+                self.roi_key = None
             self.viewer.set_canvas(result.canvas)
             self.viewer.set_fit(result.image, result.before)
             self.fit_done_key = self.fit_key
@@ -899,6 +911,10 @@ class MainWindow(QMainWindow):
                 self.inspector.set_histogram(result.hist)
             self._prefetch_neighbours()
         else:
+            # Only the latest tile, for the current settings and a zoomed view, may cover the preview.
+            if (result.gen != getattr(self, 'roi_gen', None) or not self.roi_key or self.roi_key[0] != self._key()
+                    or self.viewer.zoom == 'fit'):
+                return
             self.viewer.set_roi(result.image, result.region, result.before)
             if self.fit_done_key != self._key():
                 self._schedule(0)
@@ -959,6 +975,7 @@ class MainWindow(QMainWindow):
         if key == self._enhance_key():
             self.viewer.set_neural_badge(None)
             self.viewer.clear_roi()
+            self.roi_key = None          # a tile still in flight predates the network
             self._schedule(0)
 
     def _neural_failed(self, key, text):

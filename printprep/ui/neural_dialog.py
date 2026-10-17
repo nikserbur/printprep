@@ -10,7 +10,7 @@ from .theme import ACCENTS
 from ..i18n import tr
 
 DEFAULT_STRENGTH = 100
-DEFAULT_DETAIL = 50
+DEFAULT_DETAIL = 100
 
 
 class NeuralDialog(QDialog):
