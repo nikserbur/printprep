@@ -2,6 +2,9 @@
 setlocal
 cd /d "%~dp0"
 echo Print Prep - Windows x64 build
+rem PyInstaller wipes dist\PrintPrep first: a running copy would be left half-deleted.
+tasklist /FI "IMAGENAME eq PrintPrep.exe" 2>nul | find /I "PrintPrep.exe" >nul
+if not errorlevel 1 goto :app_running
 rem Check actual interpreter output: launcher messages alone do not prove Python ran.
 set "PRINTPREP_PYTHON_OK="
 for /f "delims=" %%V in ('py -3.12 -c "import sys; print(31264 if sys.version_info[:2] == (3, 12) and sys.maxsize > 2**32 else 0)" 2^>nul') do if "%%V"=="31264" set "PRINTPREP_PYTHON_OK=1"
@@ -28,10 +31,19 @@ copy /y README_EN.txt dist\README_EN.txt >nul
 copy /y THIRD_PARTY.md dist\THIRD_PARTY.md >nul
 .venv-build\Scripts\python.exe tools\package_release.py
 if errorlevel 1 goto :fail
+.venv-build\Scripts\python.exe -m PyInstaller --noconfirm --clean --distpath dist --workpath build\installer installer\setup.spec
+if errorlevel 1 goto :fail
+.venv-build\Scripts\python.exe tools\check_installer.py
+if errorlevel 1 goto :fail
 echo.
-echo SUCCESS: dist\PrintPrep-Windows-x64.zip
+echo SUCCESS: dist\PrintPrep-Setup.exe ^(installer for colleagues^) and dist\PrintPrep-Windows-x64.zip
 if not defined CI pause
 exit /b 0
+:app_running
+echo.
+echo Print Prep is running. Close it and start the build again.
+if not defined CI pause
+exit /b 1
 :missing_python
 echo.
 echo Python 3.12 x64 is required on the BUILD computer.

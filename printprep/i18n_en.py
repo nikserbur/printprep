@@ -130,6 +130,10 @@ EN = {
     'Русский': 'Русский',
     'После смены языка приложение быстро перезапустится и откроет ту же папку.':
         'After a language change the app restarts quickly and reopens the same folder.',
+    # uninstall (print_prep.py)
+    'Удалить Print Prep с этого компьютера? Ваши пресеты и настройки сохранятся.':
+        'Remove Print Prep from this computer? Your presets and settings are kept.',
+    'Print Prep удалён.': 'Print Prep has been removed.',
     # controls
     '{title}\nДвойной щелчок — сбросить · стрелки — точная настройка': '{title}\nDouble-click to reset · arrow keys for fine steps',
     'Выберите…': 'Choose…',

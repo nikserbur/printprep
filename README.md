@@ -57,10 +57,15 @@ The interface speaks **English and Russian** and comes in **dark, light or “as
 
 ## Build and run
 
-**Ready-made app for colleagues:** on Windows with Python 3.12 x64 run `build_exe.bat`. It runs the
-tests, builds the `PrintPrep` folder with `PrintPrep.exe`, checks the self-test and packs
-`dist/PrintPrep-Windows-x64.zip`. Colleagues unzip it and start `PrintPrep.exe`; they need neither
-Python nor admin rights.
+**For colleagues: one file, one button.** `dist/PrintPrep-Setup.exe` → “Install”. It installs per
+user (no admin rights) into `%LOCALAPPDATA%\Programs\Print Prep`, adds desktop and Start menu
+shortcuts, registers in Settings → Apps (uninstall from there) and starts the app. Updating is the
+same: run the new setup, presets are kept. The setup is not code-signed, so SmartScreen may ask for
+“More info → Run anyway”. A portable `dist/PrintPrep-Windows-x64.zip` is built as well.
+
+**Building:** on Windows with Python 3.12 x64 run `build_exe.bat`. It runs the tests, builds the
+app folder, checks its self-test, packs the ZIP, builds the installer (`installer/`) and verifies
+it with a silent install → self-test → uninstall (`tools/check_installer.py`).
 
 From source:
 

@@ -1,6 +1,16 @@
 PRINT PREP 2.2 — preparing photos for print
 ===========================================
 
+Installing
+----------
+Run PrintPrep-Setup.exe and press "Install". No admin rights are needed: the app goes into your user
+folder, shortcuts appear on the desktop and in the Start menu, and Print Prep starts. Updating works
+the same way: a new PrintPrep-Setup.exe → "Update"; presets are kept. To remove it: Settings → Apps →
+Print Prep → Uninstall.
+The installer is not code-signed, so Windows may say "Windows protected your PC": click
+"More info" → "Run anyway".
+
+
 In short
 --------
 1. Open a folder of photos ("Open folder" button, or drag the folder into the window).
@@ -170,9 +180,12 @@ Building the Windows app
 You need Windows 10/11 x64 and Python 3.12 x64 (python.org). If py says
 "No runtime installed that matches 3.12", run in PowerShell:  py install 3.12
 Then double-click build_exe.bat. The script installs dependencies, runs the tests, builds the
-PrintPrep folder with PrintPrep.exe, checks the self-test and creates dist\PrintPrep-Windows-x64.zip.
-Give colleagues the whole ZIP: unzip it and start PrintPrep.exe from the PrintPrep folder (the
-required libraries are in _internal next to it, with the guide, checksums and licenses).
+PrintPrep folder with PrintPrep.exe, checks the self-test, creates dist\PrintPrep-Windows-x64.zip and
+the installer dist\PrintPrep-Setup.exe, then checks the installer: a silent install into a temporary
+folder, a self-test of the installed app, and an uninstall.
+Give colleagues the single file PrintPrep-Setup.exe. The ZIP is for a portable folder without
+installing (start PrintPrep.exe from the PrintPrep folder; _internal sits next to it).
+The build will not start while Print Prep runs from dist\PrintPrep — close it first.
 The folder build starts in 1–2 seconds even on a slow computer. No Python or admin rights needed.
 The exe is not code-signed, so Windows SmartScreen may warn on first launch
 ("More info" → "Run anyway").

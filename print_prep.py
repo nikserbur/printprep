@@ -46,7 +46,54 @@ def self_test():
     print('Print Prep self-test: PASS')
 
 
+def uninstall(quiet=False):
+    """Remove an installation made by PrintPrep-Setup.exe ("Apps & features" calls this).
+
+    Only a folder carrying the installer's marker is removed, so a portable copy or a source
+    checkout can never be deleted by accident. Presets and settings stay for a later reinstall.
+    """
+    import json
+    import os
+    import subprocess
+    from pathlib import Path
+    app_dir = Path(sys.executable).resolve().parent
+    marker = app_dir / '.printprep-install'
+    if not getattr(sys, 'frozen', False) or not marker.exists():
+        return 1
+    info = json.loads(marker.read_text(encoding='utf-8'))
+    if not quiet:
+        from PySide6.QtWidgets import QApplication, QMessageBox
+        from printprep import i18n
+        from printprep.i18n import tr
+        from printprep.ui.store import prefs
+        QApplication.instance() or QApplication(sys.argv)
+        i18n.set_language(prefs().value('language', '') or i18n.default_language())
+        answer = QMessageBox.question(None, 'Print Prep',
+                                      tr('Удалить Print Prep с этого компьютера? Ваши пресеты и настройки сохранятся.'))
+        if answer != QMessageBox.StandardButton.Yes:
+            return 0
+    for link in info.get('shortcuts', []):
+        try:
+            Path(link).unlink()
+        except OSError:
+            pass
+    if info.get('registered'):
+        try:
+            import winreg
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, r'Software\Microsoft\Windows\CurrentVersion\Uninstall\PrintPrep')
+        except OSError:
+            pass
+    # The folder holds this very exe: a detached shell removes it once the process has exited.
+    subprocess.Popen(f'cmd /c ping -n 3 127.0.0.1 >nul & rd /s /q "{app_dir}"', cwd=os.environ.get('TEMP') or 'C:\\',
+                     creationflags=0x08000000 | 0x00000008, close_fds=True)
+    if not quiet:
+        QMessageBox.information(None, 'Print Prep', tr('Print Prep удалён.'))
+    return 0
+
+
 if __name__ == '__main__':
+    if '--uninstall' in sys.argv:
+        raise SystemExit(uninstall(quiet='--quiet' in sys.argv))
     if '--self-test' in sys.argv:
         self_test()
     else:
