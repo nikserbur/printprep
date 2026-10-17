@@ -239,6 +239,10 @@ EN = {
         'Edits for <b>this photo</b> only — on top of the preset. Other photos do not change.',
     'Считается для этого снимка: {v:.0f}%': 'Processing this photo: {v:.0f}%',
     'Уровни растянуты': 'Levels stretched',
+    '{item} · выкл': '{item} · off',
+    'Не применяется: группа «{name}» выключена. Включите её, чтобы применить.':
+        'Not applied: the “{name}” group is off. Turn it on to apply this.',
+    'Сила 0% — авто ничего не меняет': 'Strength 0% — auto changes nothing',
     'Снимок в порядке — правки не нужны': 'The photo is fine — no corrections needed',
     'Файл: {w} × {h} px · {v:.1f} Мп': 'File: {w} × {h} px · {v:.1f} MP',
     '{v} × {v2} px · {megapixels:.1f} Мп · {bits} бит · {profile}': '{v} × {v2} px · {megapixels:.1f} MP · {bits}-bit · {profile}',

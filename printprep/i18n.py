@@ -25,7 +25,7 @@ def set_language(code):
     return LANG
 
 
-def tr(text, **values):
+def tr(text, /, **values):
     """Translate `text` (the Russian original) and fill its {fields}.
 
     English templates may use {s} for a plural ending; it follows `n`, or the first integer

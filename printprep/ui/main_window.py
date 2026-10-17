@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QFileDialog, QFrame, QHBoxLayout, QInputDialog, Q
 from .. import __version__
 from ..analysis import auto_values
 from ..imageio import SUPPORTED, inspect
-from ..model import BUILTIN_PRESETS, Edit, Settings
+from ..model import BUILTIN_PRESETS, Edit, Settings, combined_adjust
 from ..pipeline import AnalysisCache, assess
 from ..presets import (PresetLibrary, describe, export_preset, export_recipe, load_session, read_preset_file,
                        save_session)
@@ -702,14 +702,34 @@ class MainWindow(QMainWindow):
         if self.crop_mode:
             self._request_crop_image()
         self._schedule(40 if interactive else 0, interactive)
+        self._refresh_auto_notes()
+
+    def _auto_summary(self, p, analysis):
+        """Auto offsets/gains as applied now, and with every group switched on (for greyed hints)."""
+        if analysis is None or p is None:
+            return None
+        adjust = combined_adjust(self.settings, self.edit())
+        scale = assess(p.size, self.settings, self.edit())['scale']
+        everything = replace(adjust, auto_wb=True, auto_light=True, auto_color=True, auto_noise=True)
+        return {'applied': auto_values(analysis, adjust, scale), 'potential': auto_values(analysis, everything, scale)}
+
+    def _refresh_auto_notes(self):
+        """Keep "For this photo" in step with the auto switches and strength (cheap, no rendering)."""
+        p = self.photo()
+        analysis = self.analyses.get(str(p.path)) if p else None
+        a = self.settings.adjust
+        signature = (str(p.path) if p else None, id(analysis), a.auto, a.auto_strength, a.auto_wb, a.auto_light,
+                     a.auto_color, a.auto_noise, json.dumps((self.edit() or Edit()).to_dict(), sort_keys=True))
+        if signature == getattr(self, '_auto_notes_signature', None):
+            return
+        self._auto_notes_signature = signature
+        self.inspector.set_auto_notes(analysis, self._auto_summary(p, analysis))
 
     def _sync_inspector(self):
         p = self.photo()
         analysis = self.analyses.get(str(p.path)) if p else None
-        offsets = None
-        if analysis is not None and p is not None:
-            offsets, _ = auto_values(analysis, self.settings.adjust, assess(p.size, self.settings, self.edit())['scale'])
-        self.inspector.set_state(self.settings, self.edit(), p, analysis, offsets)
+        self._auto_notes_signature = None
+        self.inspector.set_state(self.settings, self.edit(), p, analysis, self._auto_summary(p, analysis))
 
     def _update_preset_card(self):
         preset = self.library.get(self.active_id)
@@ -877,12 +897,10 @@ class MainWindow(QMainWindow):
             self.toast.show_message(tr('Не удалось построить просмотр'), text, 'danger')
 
     def _on_analyzed(self, path, analysis):
-        first = path not in self.analyses
         self.analyses[path] = analysis
         p = self.photo()
-        if p and str(p.path) == path and first:
-            offsets, _ = auto_values(analysis, self.settings.adjust, assess(p.size, self.settings, self.edit())['scale'])
-            self.inspector.set_auto_notes(analysis, offsets)
+        if p and str(p.path) == path:
+            self._refresh_auto_notes()
 
     def _on_ready(self, result):
         p = self.photo()

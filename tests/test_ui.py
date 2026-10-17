@@ -278,3 +278,35 @@ def test_style_change_refreshes_the_sharp_tile_at_1to1(desktop_runtime, window):
     assert float(np.abs(tile - _pixels(before)).mean()) > 1
     rgb = tile.reshape(tile.shape[0], -1, 3)
     assert float(np.abs(rgb[..., 0] - rgb[..., 2]).mean()) < 2      # grey: B/W reached the tile
+
+
+def test_auto_notes_show_what_is_applied(desktop_runtime, tmp_path):
+    """'For this photo' lists only corrections that really apply; switched-off groups are marked."""
+    from PIL import Image
+    from printprep.color import decode, encode
+    from printprep.ui.controls import Chip
+    from conftest import gradient_image
+    folder = tmp_path / 'dark'
+    folder.mkdir()
+    dark = decode(gradient_image(1200, 800).astype(np.float32) / 255) * np.array([1.15, 1, .82], np.float32) * .45
+    Image.fromarray(np.round(np.clip(encode(np.clip(dark, 0, 1)), 0, 1) * 255).astype(np.uint8)).save(folder / 'dark.jpg')
+    w = MainWindow()
+    w.resize(1400, 900)
+    w.show()
+    w.load_folder(folder)
+    wait_idle(desktop_runtime, w)
+    c = w.inspector.batch_controls
+    c['auto'].setChecked(True)
+    wait_idle(desktop_runtime, w)
+
+    def notes():
+        return [ch.text() for ch in w.inspector.batch_auto_notes.findChildren(Chip)]
+    assert any('EV' in n and 'выкл' not in n for n in notes()), notes()
+    c['auto_light'].click()
+    wait_idle(desktop_runtime, w)
+    light = [n for n in notes() if 'EV' in n]
+    assert light and all(n.endswith('· выкл') for n in light), notes()
+    c['auto_light'].click()
+    wait_idle(desktop_runtime, w)
+    assert not any(n.endswith('· выкл') for n in notes() if 'EV' in n)
+    w.close()

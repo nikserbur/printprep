@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (QDoubleSpinBox, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QMenu, QPushButton,
                                QScrollArea, QSpinBox, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
@@ -585,7 +586,7 @@ class Inspector(QWidget):
                                         f'border-radius: 6px; padding: 7px 10px; color: {T["text"]}; font-size: 12px; }}')
         self.scope_banner.setText(text)
 
-    def set_state(self, settings: Settings, edit: Edit | None, photo=None, analysis=None, auto_offsets=None):
+    def set_state(self, settings: Settings, edit: Edit | None, photo=None, analysis=None, auto_summary=None):
         self._updating = True
         try:
             self.settings = replace(settings, adjust=replace(settings.adjust))
@@ -594,7 +595,7 @@ class Inspector(QWidget):
             self.scope_switch.setItemEnabled('photo', photo is not None)
             self._sync_batch()
             self._sync_photo()
-            self.set_auto_notes(analysis, auto_offsets)
+            self.set_auto_notes(analysis, auto_summary)
         finally:
             self._updating = False
 
@@ -616,28 +617,73 @@ class Inspector(QWidget):
             w.setStyleSheet(f'color: {color_}; font-size: 12px;')
         self.neural_section.set_subtitle({'running': tr('идёт расчёт'), 'ready': tr('применена'), 'pending': tr('в очереди')}.get(state, ''))
 
-    def set_auto_notes(self, analysis, auto_offsets=None):
+    def set_auto_notes(self, analysis, summary=None):
+        """What auto correction actually does to this photo, at the current strength and switches.
+
+        `summary` comes from MainWindow._auto_summary: the applied offsets/gains and what the
+        switched-off groups would add. Suggestions of a switched-off group are shown greyed with
+        a hint, so "+1.0 EV" never appears as if it were applied.
+        """
         for flow in (self.batch_auto_notes, self.photo_auto_notes):
             flow.clear()
-        if not self.settings.adjust.auto:
+        a = self.settings.adjust
+        if not a.auto:
             self.photo_auto_notes.add(Chip(tr('Авто выключено'), 'neutral'))
             return
-        if analysis is None:
+        if analysis is None or summary is None:
             for flow in (self.batch_auto_notes, self.photo_auto_notes):
                 flow.add(Chip(tr('Анализ при просмотре снимка…'), 'neutral'))
             return
-        notes = list(analysis.get('notes', []))
-        offsets = auto_offsets or {}
-        for key in ('shadows', 'highlights', 'contrast', 'vibrance', 'denoise'):
-            value = offsets.get(key, 0)
-            if abs(value) >= 5:
-                notes.append(f'{tr(ADJUST_RANGES[key][0])} {value:+.0f}'.replace('-', '−'))
-        if offsets.get('levels'):
-            notes.append(tr('Уровни растянуты'))
-        if not notes:
-            notes = [tr('Снимок в порядке — правки не нужны')]
+        (offsets, gains), (all_offsets, all_gains) = summary['applied'], summary['potential']
+        wb_texts = {tr('ББ: теплее'), tr('ББ: холоднее'), tr('ББ: убран оттенок'), tr('ББ: бережно к коже')}
+        wb_note = next((n for n in analysis.get('notes', []) if n in wb_texts), tr('ББ: убран оттенок'))
+
+        def light_items(values):
+            items = []
+            ev = values.get('exposure', 0)
+            if abs(ev) >= .1:
+                items.append(tr('Экспозиция {ev:+.1f} EV', ev=ev).replace('-', '−'))
+            if values.get('levels'):
+                items.append(tr('Уровни растянуты'))
+            for key in ('shadows', 'highlights', 'contrast', 'dehaze'):
+                if abs(values.get(key, 0)) >= 5:
+                    items.append(f'{tr(ADJUST_RANGES[key][0])} {values[key]:+.0f}'.replace('-', '−'))
+            return items
+
+        def single(values, key):
+            v = values.get(key, 0)
+            return [f'{tr(ADJUST_RANGES[key][0])} {v:+.0f}'.replace('-', '−')] if abs(v) >= 5 else []
+
+        def cast(g):
+            return float(np.abs(np.log(np.asarray(g, np.float32))).max()) > .012
+
+        applied, off = [], []
+        for key, name in (('auto_wb', tr('Баланс белого')), ('auto_light', tr('Свет')),
+                          ('auto_color', tr('Цвет')), ('auto_noise', tr('Шум'))):
+            if key == 'auto_wb':
+                now, could = ([wb_note] if cast(gains) else []), ([wb_note] if cast(all_gains) else [])
+            elif key == 'auto_light':
+                now, could = light_items(offsets), light_items(all_offsets)
+            else:
+                k2 = 'vibrance' if key == 'auto_color' else 'denoise'
+                now, could = single(offsets, k2), single(all_offsets, k2)
+            if getattr(a, key):
+                applied += now
+            else:
+                off += [(text, name) for text in could]
+        info = [tr('Лица: {n}', n=len(analysis['faces']))] if analysis.get('faces') else []
+        info += [n for n in analysis.get('notes', []) if n == tr('Монохромный снимок')]
         for flow in (self.batch_auto_notes, self.photo_auto_notes):
-            for text in notes:
+            for text in applied:
+                flow.add(Chip(text, 'accent'))
+            for text, name in off:
+                chip = Chip(tr('{item} · выкл', item=text), 'neutral')
+                chip.setToolTip(tr('Не применяется: группа «{name}» выключена. Включите её, чтобы применить.', name=name))
+                flow.add(chip)
+            if not applied and not off:
+                flow.add(Chip(tr('Сила 0% — авто ничего не меняет') if a.auto_strength <= 0
+                              else tr('Снимок в порядке — правки не нужны'), 'neutral'))
+            for text in info:
                 flow.add(Chip(text, 'neutral'))
 
     def _sync_batch(self):
