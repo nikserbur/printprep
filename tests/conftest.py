@@ -40,6 +40,12 @@ def isolated_preferences(tmp_path, monkeypatch):
     # ui.store.prefs() follows the default format and path, so this redirects every store.
     QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path / 'prefs'))
     monkeypatch.setattr(QStandardPaths, 'writableLocation', staticmethod(lambda *_: str(tmp_path / 'appdata')))
+    # The tests assert Russian source strings. Without a stored choice the app follows the host
+    # locale (English on CI runners), and apply_appearance() re-reads it, so pin the language here.
+    from printprep import i18n
+    from printprep.ui.store import prefs
+    prefs().setValue('language', 'ru')
+    i18n.set_language('ru')
 
 
 def gradient_image(w=1200, h=800, seed=0, noise=0.):
