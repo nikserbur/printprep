@@ -64,15 +64,14 @@ The interface speaks **English and Russian** and comes in **dark, light or “as
 
 ## Build and run
 
-**Downloads.** Prebuilt downloads will be published on the
-[Releases page](https://github.com/nikserbur/printprep/releases); there are no releases yet. Until then
-either build the app yourself with `build_exe.bat` (below), or open the
-[Actions tab](https://github.com/nikserbur/printprep/actions), pick the latest successful
-“Windows build” run and download its artifacts: `PrintPrep-Setup` (the installer) and
-`PrintPrep-Windows-x64` (the portable ZIP). Downloading artifacts requires signing in to GitHub, and
-GitHub keeps them for a limited time.
+**Downloads.** Get `PrintPrep-Setup.exe` (installer) or `PrintPrep-Windows-x64.zip` (portable) from the
+[latest release](https://github.com/nikserbur/printprep/releases/latest); `SHA256SUMS.txt` next to them
+has the checksums. Builds of unreleased commits are attached to each successful “Windows build” run in
+the [Actions tab](https://github.com/nikserbur/printprep/actions) (downloading them requires signing in
+to GitHub, and GitHub keeps them for a limited time). You can also build the app yourself with
+`build_exe.bat` (below).
 
-**One file, one button.** `PrintPrep-Setup.exe` (built into `dist/`, or from the artifact above) →
+**One file, one button.** `PrintPrep-Setup.exe` (from the release, or built into `dist/`) →
 “Install”. It installs per user (no admin rights) into `%LOCALAPPDATA%\Programs\Print Prep`, adds
 desktop and Start menu shortcuts, registers in Settings → Apps (uninstall from there) and starts the
 app. Updating is the same: run the new setup, presets are kept. The setup is not code-signed, so

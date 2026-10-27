@@ -189,9 +189,10 @@ The build will not start while Print Prep runs from dist\PrintPrep — close it 
 The folder build starts in 1–2 seconds even on a slow computer. No Python or admin rights needed.
 The exe is not code-signed, so Windows SmartScreen may warn on first launch
 ("More info" → "Run anyway").
-Alternative to building: open the Actions tab of the GitHub repository, pick the latest successful
-"Windows build" run and download its artifacts: PrintPrep-Setup (the installer) and
-PrintPrep-Windows-x64 (the portable ZIP).
+Alternative to building: download PrintPrep-Setup.exe (the installer) or PrintPrep-Windows-x64.zip
+(the portable ZIP) from the latest release:
+https://github.com/nikserbur/printprep/releases/latest
+Builds of unreleased commits are attached to each successful "Windows build" run in the Actions tab.
 
 From source:
   py -3.12 -m venv .venv
