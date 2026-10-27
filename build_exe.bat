@@ -36,7 +36,7 @@ if errorlevel 1 goto :fail
 .venv-build\Scripts\python.exe tools\check_installer.py
 if errorlevel 1 goto :fail
 echo.
-echo SUCCESS: dist\PrintPrep-Setup.exe ^(installer for colleagues^) and dist\PrintPrep-Windows-x64.zip
+echo SUCCESS: dist\PrintPrep-Setup.exe ^(installer^) and dist\PrintPrep-Windows-x64.zip
 if not defined CI pause
 exit /b 0
 :app_running
@@ -54,7 +54,7 @@ echo   py install 3.12
 echo If your launcher does not support install, use the Python 3.12 x64
 echo installer from https://www.python.org/downloads/windows/
 echo Then close this window and run build_exe.bat again.
-echo Colleagues running the finished PrintPrep.exe do NOT need Python.
+echo Users running the finished PrintPrep.exe do NOT need Python.
 goto :fail
 :missing_venv
 echo The build environment is missing or incompatible.

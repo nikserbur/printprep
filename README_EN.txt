@@ -78,7 +78,7 @@ fixed, your copy goes to "Mine").
 The "Preset" button in the card holds every action: save, save as new, rename, duplicate, reset,
 export and import a file, delete, manage presets. "New" above the list saves the current settings
 as a new preset. "…" next to a preset (on hover) and right-click open its menu.
-A preset file can be sent to colleagues; they import it. Version 1.x recipes work too.
+A preset file can be passed to other people; they import it. Version 1.x recipes work too.
 Folder menu → "Export recipe" saves the preset together with the per-photo edits.
 
 Per-photo edits of every folder are saved automatically and restored next time.
@@ -183,18 +183,25 @@ Then double-click build_exe.bat. The script installs dependencies, runs the test
 PrintPrep folder with PrintPrep.exe, checks the self-test, creates dist\PrintPrep-Windows-x64.zip and
 the installer dist\PrintPrep-Setup.exe, then checks the installer: a silent install into a temporary
 folder, a self-test of the installed app, and an uninstall.
-Give colleagues the single file PrintPrep-Setup.exe. The ZIP is for a portable folder without
+Give users the single file PrintPrep-Setup.exe. The ZIP is for a portable folder without
 installing (start PrintPrep.exe from the PrintPrep folder; _internal sits next to it).
 The build will not start while Print Prep runs from dist\PrintPrep — close it first.
 The folder build starts in 1–2 seconds even on a slow computer. No Python or admin rights needed.
 The exe is not code-signed, so Windows SmartScreen may warn on first launch
 ("More info" → "Run anyway").
+Alternative to building: open the Actions tab of the GitHub repository, pick the latest successful
+"Windows build" run and download its artifacts: PrintPrep-Setup (the installer) and
+PrintPrep-Windows-x64 (the portable ZIP).
 
 From source:
   py -3.12 -m venv .venv
-  .venv\Scripts\python -m pip install -r requirements-dev.txt
+  .venv\Scripts\python -m pip install -r requirements.txt
   .venv\Scripts\python print_prep.py
 Installation check: .venv\Scripts\python print_prep.py --self-test
+Tests (needs requirements-dev.txt, as build_exe.bat does):
+  .venv\Scripts\python -m pip install -r requirements-dev.txt
+  set QT_QPA_PLATFORM=offscreen
+  .venv\Scripts\python -m pytest -q
 
 
 Deliberately not included

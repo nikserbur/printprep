@@ -80,7 +80,7 @@ Ctrl+Z отменяет, Ctrl+Y повторяет.
 «Новый» над списком сохраняет текущие настройки как новый пресет.
 «…» у пресета (появляется при наведении) и правый щелчок — меню этого пресета.
 «Управление пресетами» внизу списка — отдельное окно со всеми пресетами.
-Файл пресета можно отправить коллегам — они импортируют его. Подходят и рецепты версии 1.x.
+Файл пресета можно передать другим людям — они импортируют его. Подходят и рецепты версии 1.x.
 Меню папки → «Экспортировать рецепт» сохраняет пресет вместе с правками снимков.
 
 Правки снимков каждой папки сохраняются автоматически и восстанавливаются при следующем открытии.
@@ -190,20 +190,26 @@ Ctrl+Z/Ctrl+Y отмена/повтор · Ctrl+S сохранить пресе�
 папку PrintPrep с PrintPrep.exe, проверит self-test, создаст dist\PrintPrep-Windows-x64.zip и
 установщик dist\PrintPrep-Setup.exe, а потом проверит установщик: тихая установка во временную
 папку, self-test установленной программы, удаление.
-Коллегам передавайте один файл PrintPrep-Setup.exe. ZIP — для тех, кому нужна переносная папка
+Пользователям передавайте один файл PrintPrep-Setup.exe. ZIP — для тех, кому нужна переносная папка
 без установки (запускать PrintPrep.exe из папки PrintPrep, рядом лежит _internal).
 Пока Print Prep открыт из dist\PrintPrep, сборка не начнётся — закройте программу.
 Папочная сборка запускается за 1–2 секунды даже на слабом компьютере.
 Python им не нужен, права администратора тоже.
-Альтернатива — workflow «Windows build» во вкладке Actions на GitHub.
+Альтернатива сборке — во вкладке Actions репозитория на GitHub открыть последний успешный запуск
+workflow «Windows build» и скачать артефакты: PrintPrep-Setup (установщик) и PrintPrep-Windows-x64
+(переносной ZIP).
 Exe не подписан сертификатом, поэтому Windows SmartScreen может показать предупреждение
 при первом запуске («Подробнее» → «Выполнить в любом случае»).
 
 Запуск из исходников:
   py -3.12 -m venv .venv
-  .venv\Scripts\python -m pip install -r requirements-dev.txt
+  .venv\Scripts\python -m pip install -r requirements.txt
   .venv\Scripts\python print_prep.py
 Проверка установки: .venv\Scripts\python print_prep.py --self-test
+Тесты (нужен requirements-dev.txt, как в build_exe.bat):
+  .venv\Scripts\python -m pip install -r requirements-dev.txt
+  set QT_QPA_PLATFORM=offscreen
+  .venv\Scripts\python -m pytest -q
 
 
 Что сознательно не делается
