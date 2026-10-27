@@ -26,3 +26,8 @@ jobs:
           name: PrintPrep-Windows-x64
           path: dist/PrintPrep-Windows-x64.zip
           if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PrintPrep-Setup
+          path: dist/PrintPrep-Setup.exe
+          if-no-files-found: error
